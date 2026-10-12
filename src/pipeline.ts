@@ -1,10 +1,12 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import sharp from "sharp";
 import { VIEW_IDS, type ViewId } from "./views.ts";
 import { loadMesh, parseMesh, type Mesh } from "./mesh/index.ts";
 import { renderSixViews, type RenderOptions } from "./render/ortho.ts";
-import { analyzeViewSet, type ViewPaths } from "./analyze/report.ts";
+import { analyzeViewSet, loadViewSamples, type ViewPaths } from "./analyze/report.ts";
+import { carveVisualHull, type CarveOptions, type VoxelGrid } from "./reconstruct/carve.ts";
+import { surfaceMesh, toObj } from "./reconstruct/surface.ts";
 import type { SixViewReport } from "./analyze/types.ts";
 import { resolveProvider } from "./generate/index.ts";
 
@@ -115,6 +117,36 @@ export async function renderAndAnalyze(
   const mesh = await loadMesh(meshPath);
   const render = await renderToDirectory(mesh, outputDirectory, options);
   return { render, report: await analyzeViewSet(render.paths) };
+}
+
+export interface CarveResult {
+  readonly objPath: string;
+  readonly grid: VoxelGrid;
+  readonly mesh: Mesh;
+  readonly report: SixViewReport;
+}
+
+/**
+ * Six views -> solid. The report is produced from the same decoded views, so a
+ * set that fails analysis can be rejected before anyone trusts the geometry.
+ */
+export async function carveFromViews(
+  paths: ViewPaths,
+  objPath: string,
+  options: CarveOptions = {},
+): Promise<CarveResult> {
+  const { samples, missing } = await loadViewSamples(paths);
+  if (samples.size === 0) throw new Error("복원할 뷰가 없습니다.");
+
+  const report = await analyzeViewSet(paths);
+  const grid = carveVisualHull(samples, report.axes, options);
+  const mesh = surfaceMesh(grid);
+
+  await mkdir(dirname(resolve(objPath)), { recursive: true });
+  const header = `views=${grid.views.join(",")}${missing.length > 0 ? ` missing=${missing.join(",")}` : ""}`;
+  await writeFile(objPath, toObj(mesh, header), "utf8");
+
+  return { objPath, grid, mesh, report };
 }
 
 export type { ViewId, ViewPaths, SixViewReport };

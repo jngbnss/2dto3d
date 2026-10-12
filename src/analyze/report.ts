@@ -13,7 +13,13 @@ const REVIEW = 0.55;
 /** A single check this low means one necessary measurement is unrecoverable. */
 const CHECK_FLOOR = 0.5;
 
-export async function analyzeViewSet(paths: ViewPaths): Promise<SixViewReport> {
+/**
+ * Loads every available view once. Carving needs the same silhouettes and pixels
+ * the report measures, so both paths share this loader instead of decoding twice.
+ */
+export async function loadViewSamples(
+  paths: ViewPaths,
+): Promise<{ samples: Map<ViewId, ViewSample>; missing: ViewId[] }> {
   const samples = new Map<ViewId, ViewSample>();
   const missing: ViewId[] = [];
 
@@ -25,10 +31,15 @@ export async function analyzeViewSet(paths: ViewPaths): Promise<SixViewReport> {
         return;
       }
       const raster = await loadRaster(path);
-      samples.set(id, { id, path, silhouette: extractSilhouette(raster) });
+      samples.set(id, { id, path, raster, silhouette: extractSilhouette(raster) });
     }),
   );
   missing.sort((a, b) => VIEW_IDS.indexOf(a) - VIEW_IDS.indexOf(b));
+  return { samples, missing };
+}
+
+export async function analyzeViewSet(paths: ViewPaths): Promise<SixViewReport> {
+  const { samples, missing } = await loadViewSamples(paths);
 
   const dimension = dimensionCheck(samples);
   const checks: Check[] = [

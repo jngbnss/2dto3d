@@ -1,6 +1,7 @@
 import { VIEW_IDS, VIEWS, type ViewId } from "../views.ts";
 import { center as centerMesh } from "../mesh/types.ts";
 import type { Mesh } from "../mesh/types.ts";
+import { BASES, type Basis } from "./basis.ts";
 
 export interface RenderedView {
   readonly id: ViewId;
@@ -24,22 +25,6 @@ const DEFAULT_SIZE = 512;
 const DEFAULT_MARGIN = 0.06;
 const DEFAULT_ALBEDO = [0.82, 0.84, 0.88] as const;
 const AMBIENT = 0.35;
-
-/** Camera basis per view: `right` and `up` span the image, `forward` points into the screen. */
-interface Basis {
-  readonly right: readonly [number, number, number];
-  readonly up: readonly [number, number, number];
-  readonly forward: readonly [number, number, number];
-}
-
-const BASES: { readonly [K in ViewId]: Basis } = {
-  front: { right: [1, 0, 0], up: [0, 1, 0], forward: [0, 0, -1] },
-  back: { right: [-1, 0, 0], up: [0, 1, 0], forward: [0, 0, 1] },
-  left: { right: [0, 0, 1], up: [0, 1, 0], forward: [1, 0, 0] },
-  right: { right: [0, 0, -1], up: [0, 1, 0], forward: [-1, 0, 0] },
-  top: { right: [1, 0, 0], up: [0, 0, -1], forward: [0, -1, 0] },
-  bottom: { right: [1, 0, 0], up: [0, 0, 1], forward: [0, 1, 0] },
-};
 
 /**
  * Renders all six canonical views with one shared world-to-pixel scale.

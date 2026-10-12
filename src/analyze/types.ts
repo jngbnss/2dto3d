@@ -1,4 +1,5 @@
 import type { Axis, ViewId } from "../views.ts";
+import type { Raster } from "./raster.ts";
 import type { Silhouette } from "./silhouette.ts";
 
 export type Severity = "error" | "warn" | "info";
@@ -29,6 +30,7 @@ export interface Check {
 export interface ViewSample {
   readonly id: ViewId;
   readonly path: string;
+  readonly raster: Raster;
   readonly silhouette: Silhouette;
 }
 

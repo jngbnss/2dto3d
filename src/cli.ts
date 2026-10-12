@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { writeFile } from "node:fs/promises";
 import { VIEW_IDS } from "./views.ts";
 import { demoMesh } from "./mesh/primitives.ts";
 import { analyzeViewSet, formatReport, type ViewPaths } from "./analyze/report.ts";
+import { describeGrid } from "./reconstruct/carve.ts";
 import {
+  carveFromViews,
   renderAndAnalyze,
   renderToDirectory,
   runFromImage,
@@ -21,15 +23,18 @@ const USAGE = `sixview — 2D 이미지 1장에서 6면 뷰를 만들고 3D 복�
   sixview demo    [--out <dir>] [--size <px>] [--json <file>]
   sixview render  <mesh.glb|obj> [--out <dir>] [--size <px>]
   sixview analyze <dir> | --front a.png --back b.png … [--json <file>]
+  sixview carve   <dir> [--obj <file>] [--res <n>] [--tolerance <n>] [--json <file>]
   sixview run     <image> --provider <${Object.keys(PROVIDERS).join("|")}> [--model <id>] [--out <dir>] [--size <px>]
   sixview serve   [--dir <dir>] [--port <n>]
 
 옵션
-  --out    결과 디렉터리 (기본 ./out)
-  --size   렌더 해상도, 정사각 픽셀 (기본 512)
-  --model  공급자 모델 id (기본값은 공급자별 문서 참조)
-  --json   분석 결과를 JSON으로 저장
-  --open   serve 시 브라우저 자동 실행 안내 출력
+  --out        결과 디렉터리 (기본 ./out)
+  --size       렌더 해상도, 정사각 픽셀 (기본 512)
+  --obj        carve 출력 OBJ 경로 (기본 <out>/carved.obj)
+  --res        복셀 해상도, 가장 긴 축 기준 (기본 128)
+  --tolerance  실루엣 밖으로 벗어나도 허용할 뷰 수 (기본 0)
+  --model      공급자 모델 id (기본값은 공급자별 문서 참조)
+  --json       분석 결과를 JSON으로 저장
 
 공급자 자격 증명
 ${Object.values(PROVIDERS)
@@ -44,6 +49,9 @@ async function main(argv: string[]): Promise<number> {
     options: {
       out: { type: "string" },
       size: { type: "string" },
+      obj: { type: "string" },
+      res: { type: "string" },
+      tolerance: { type: "string" },
       provider: { type: "string" },
       model: { type: "string" },
       json: { type: "string" },
@@ -103,6 +111,29 @@ async function main(argv: string[]): Promise<number> {
       process.stdout.write(`${formatReport(report)}\n`);
       await maybeWriteJson(values.json, report);
       return report.verdict === "fail" ? 2 : 0;
+    }
+
+    case "carve": {
+      const paths = await collectViewPaths(positionals[1], values);
+      if (Object.keys(paths).length === 0) {
+        throw new Error(
+          `복원할 뷰를 찾지 못했습니다. 디렉터리에 ${VIEW_IDS.map((id) => `${id}.png`).join(", ")}을 두거나 --front 등으로 직접 지정하세요.`,
+        );
+      }
+      const resolution = values.res === undefined ? undefined : Number.parseInt(values.res, 10);
+      if (resolution !== undefined && (!Number.isFinite(resolution) || resolution < 16 || resolution > 512)) {
+        throw new Error("--res는 16~512 사이여야 합니다.");
+      }
+      const objPath = resolve(values.obj ?? join(outDirectory, "carved.obj"));
+      const result = await carveFromViews(paths, objPath, {
+        ...(resolution === undefined ? {} : { resolution }),
+        ...(values.tolerance === undefined ? {} : { tolerance: Number.parseInt(values.tolerance, 10) }),
+      });
+      process.stdout.write(
+        `${formatReport(result.report)}\n\n복원 결과\n  ${describeGrid(result.grid)}\n  면 ${result.mesh.indices.length / 3}개 · 저장 ${result.objPath}\n`,
+      );
+      await maybeWriteJson(values.json, result.report);
+      return result.report.verdict === "fail" ? 2 : 0;
     }
 
     case "run": {
