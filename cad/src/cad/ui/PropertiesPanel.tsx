@@ -8,6 +8,7 @@ import type { CadObject, Feature, SolidObject, Vec3 } from "../core/types";
 import { capsOf } from "../core/types";
 import { formatArea, formatLength, formatVolume } from "../core/units";
 import { NumberField } from "./NumberField";
+import { TextField } from "./TextField";
 import { FeatureEditor } from "./FeatureEditor";
 import { PALETTE } from "../core/factories";
 
@@ -70,19 +71,11 @@ export function PropertiesPanel() {
         {buildError ? <div className="alert alert--error">Geometry build failed: {buildError}</div> : null}
 
         <Section title="Identity">
-          <label className="field">
-            <span className="field__label">Name</span>
-            <span className="field__input">
-              <input
-                type="text"
-                value={object.name}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  commit("Rename object", (draft) => renameObject(draft, object.id, value));
-                }}
-              />
-            </span>
-          </label>
+          <TextField
+            label="Name"
+            value={object.name}
+            onCommit={(value) => commit("Rename object", (draft) => renameObject(draft, object.id, value))}
+          />
           <div className="swatches">
             {PALETTE.map((c) => (
               <button

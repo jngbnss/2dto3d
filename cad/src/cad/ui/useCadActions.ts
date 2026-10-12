@@ -70,11 +70,15 @@ export function useCadActions(renderer: CADRenderer | null, engine: CADGeometryE
     try {
       const measure = await engine.measure(plan.feature);
       if (!(measure.volume > 0)) throw new Error("the result is empty");
+      let resultId: string | null = null;
       commit(`Boolean ${op}`, (draft) => {
         const result = booleanCombine(draft, op, selection);
         if (!result) throw new Error("Boolean failed");
-        select([result.id]);
+        resultId = result.id;
       }, { log: `boolean ${op} over ${solids.length} bodies`, ids: selection });
+      // Selection must be set AFTER the commit: `select` validates ids against
+      // the committed document, and the result does not exist until then.
+      if (resultId) select([resultId]);
       setStatus("success", `Boolean ${op} complete`);
     } catch (err) {
       setStatus("error", `Boolean ${op} failed: ${err instanceof Error ? err.message : String(err)}`);

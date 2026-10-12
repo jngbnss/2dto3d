@@ -13,6 +13,12 @@ import type { CadDocument } from "../core/types";
  *  - moving/rotating/regrouping is pure three.js and never touches the kernel;
  *  - a kernel failure is recorded against that one object and the rest of the
  *    scene keeps working.
+ *
+ * Staleness is decided by the token, not by effect generation. A tessellation is
+ * a pure function of its feature, so a result is applied whenever it still
+ * matches the object's current token — even if several document edits landed
+ * while it was in flight. Cancelling on every edit instead would drop results
+ * whose token was already recorded, and the solid would never rebuild.
  */
 export function useGeometrySync(
   renderer: CADRenderer | null,
@@ -20,8 +26,16 @@ export function useGeometrySync(
   kernelReady: boolean,
   doc: CadDocument,
 ) {
+  /** objectId -> token of the build that is current (done or in flight). */
   const tokens = useRef(new Map<string, string>());
-  const generation = useRef(0);
+  const unmounted = useRef(false);
+
+  useEffect(() => {
+    unmounted.current = false;
+    return () => {
+      unmounted.current = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!renderer) return;
@@ -30,16 +44,11 @@ export function useGeometrySync(
 
   useEffect(() => {
     if (!renderer || !kernelReady) return;
-    const store = useProjectStore.getState();
-    const myGeneration = ++generation.current;
-    let cancelled = false;
 
     const live = new Set(Object.keys(doc.objects));
     for (const id of [...tokens.current.keys()]) {
       if (!live.has(id)) tokens.current.delete(id);
     }
-
-    const pending: Promise<void>[] = [];
 
     for (const object of Object.values(doc.objects)) {
       if (object.kind === "mesh") {
@@ -53,36 +62,34 @@ export function useGeometrySync(
       if (tokens.current.get(object.id) === token) continue;
       tokens.current.set(object.id, token);
 
-      store.setBusy(1);
-      const job = engine
+      const objectId = object.id;
+      const objectName = object.name;
+      useProjectStore.getState().setBusy(1);
+      engine
         .tessellate(object.feature)
         .then((result) => {
-          if (cancelled || generation.current !== myGeneration) return;
-          renderer.setSolidGeometry(object.id, result, token);
-          useProjectStore.getState().setGeometry(object.id, {
+          // A newer edit has superseded this build, or the editor is gone.
+          if (unmounted.current || tokens.current.get(objectId) !== token) return;
+          if (!useProjectStore.getState().doc.objects[objectId]) return;
+          renderer.setSolidGeometry(objectId, result, token);
+          useProjectStore.getState().setGeometry(objectId, {
             volume: result.volume,
             area: result.area,
             triangleCount: result.triangleCount,
             bbox: result.bbox,
           });
-          useProjectStore.getState().setBuildError(object.id, null);
+          useProjectStore.getState().setBuildError(objectId, null);
         })
         .catch((err: Error) => {
-          // Retry on the next edit rather than caching a failed build.
-          tokens.current.delete(object.id);
-          if (cancelled) return;
-          useProjectStore.getState().setBuildError(object.id, err.message);
-          useProjectStore.getState().setStatus("error", `${object.name}: ${err.message}`);
+          // Forget the token so the next edit retries instead of caching a failure.
+          if (tokens.current.get(objectId) === token) tokens.current.delete(objectId);
+          if (unmounted.current) return;
+          useProjectStore.getState().setBuildError(objectId, err.message);
+          useProjectStore.getState().setStatus("error", `${objectName}: ${err.message}`);
         })
         .finally(() => {
           useProjectStore.getState().setBusy(-1);
         });
-      pending.push(job);
     }
-
-    void Promise.allSettled(pending);
-    return () => {
-      cancelled = true;
-    };
   }, [renderer, engine, kernelReady, doc]);
 }

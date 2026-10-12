@@ -217,7 +217,7 @@ export function CADWorkspace() {
           onAiImport={() => setDialog("ai")}
         />
         <div className="workspace__body">
-          <ErrorBoundary label="Object tree"><ObjectTree /></ErrorBoundary>
+          <ErrorBoundary label="Object tree"><ObjectTree actions={actions} /></ErrorBoundary>
           <ErrorBoundary label="Viewport"><Viewport onReady={setRenderer} /></ErrorBoundary>
           <ErrorBoundary label="Properties"><PropertiesPanel /></ErrorBoundary>
         </div>

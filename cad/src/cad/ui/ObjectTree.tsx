@@ -1,44 +1,26 @@
 import { useState } from "react";
 import { useProjectStore } from "../core/projectStore";
-import {
-  childrenOf, duplicateObjects, groupObjects, removeObjects, renameObject,
-  reparent, setVisible, topLevelOf, ungroup,
-} from "../core/objectManager";
+import { childrenOf, renameObject, reparent, setVisible } from "../core/objectManager";
 import type { CadObject } from "../core/types";
+import type { CadActions } from "./useCadActions";
 
 const KIND_ICON: Record<CadObject["kind"], string> = { solid: "◧", mesh: "△", group: "▣" };
 
-export function ObjectTree() {
+/**
+ * Structural edits delegate to `useCadActions`, the single implementation shared
+ * with the toolbar and the keyboard shortcuts. Duplicating them here is how the
+ * two paths drifted: one of them updated the selection and the other did not.
+ */
+export function ObjectTree({ actions }: { actions: CadActions }) {
   const doc = useProjectStore((s) => s.doc);
   const selection = useProjectStore((s) => s.selection);
   const commit = useProjectStore((s) => s.commit);
-  const select = useProjectStore((s) => s.select);
   const toggleSelect = useProjectStore((s) => s.toggleSelect);
-  const setStatus = useProjectStore((s) => s.setStatus);
   const buildErrors = useProjectStore((s) => s.buildErrors);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
 
   const roots = childrenOf(doc, null);
-
-  const doGroup = () => {
-    if (selection.length < 1) return;
-    commit("Group objects", (draft) => {
-      const group = groupObjects(draft, selection);
-      if (!group) throw new Error("Nothing to group");
-    }, { log: `group ${selection.length} objects`, ids: selection });
-  };
-
-  const doUngroup = () => {
-    const groups = selection.filter((id) => doc.objects[id]?.kind === "group");
-    if (!groups.length) {
-      setStatus("warn", "Select a group to ungroup");
-      return;
-    }
-    commit("Ungroup", (draft) => {
-      for (const id of groups) ungroup(draft, id);
-    }, { log: `ungroup ${groups.length}`, ids: groups });
-  };
 
   return (
     <aside className="panel panel--left">
@@ -47,27 +29,10 @@ export function ObjectTree() {
         <span className="panel__count">{Object.keys(doc.objects).length}</span>
       </header>
       <div className="panel__toolbar">
-        <button type="button" className="btn btn--sm" disabled={selection.length === 0} onClick={doGroup}>Group</button>
-        <button type="button" className="btn btn--sm" disabled={selection.length === 0} onClick={doUngroup}>Ungroup</button>
-        <button
-          type="button" className="btn btn--sm" disabled={selection.length === 0}
-          onClick={() => commit("Duplicate", (draft) => {
-            const ids = duplicateObjects(draft, topLevelOf(draft, selection).map((o) => o.id), [20, 0, 0]);
-            if (!ids.length) throw new Error("Nothing to duplicate");
-          }, { log: `duplicate ${selection.length}`, ids: selection })}
-        >
-          Duplicate
-        </button>
-        <button
-          type="button" className="btn btn--sm btn--danger" disabled={selection.length === 0}
-          onClick={() => {
-            const ids = [...selection];
-            commit("Delete objects", (draft) => removeObjects(draft, ids), { log: `delete ${ids.length}`, ids });
-            select([]);
-          }}
-        >
-          Delete
-        </button>
+        <button type="button" className="btn btn--sm" disabled={selection.length === 0} onClick={actions.groupSelection}>Group</button>
+        <button type="button" className="btn btn--sm" disabled={selection.length === 0} onClick={actions.ungroupSelection}>Ungroup</button>
+        <button type="button" className="btn btn--sm" disabled={selection.length === 0} onClick={actions.duplicateSelection}>Duplicate</button>
+        <button type="button" className="btn btn--sm btn--danger" disabled={selection.length === 0} onClick={actions.deleteSelection}>Delete</button>
       </div>
       <div
         className="panel__scroll tree"

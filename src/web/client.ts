@@ -45,6 +45,16 @@ export const CLIENT_HTML = String.raw`<!doctype html>
   .axes b { display:block; font-size:18px; font-family:ui-monospace,Consolas,monospace; }
   .axes small { color:var(--muted); }
   h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:22px 0 0; }
+  .hint { color:var(--muted); font-size:12px; }
+  figure.slot { position:relative; cursor:pointer; }
+  figure.slot .drop { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    font-size:13px; color:var(--text); background:rgba(10,12,18,.72); opacity:0; transition:opacity .12s; pointer-events:none; }
+  figure.slot:hover .drop, figure.slot.over .drop { opacity:1; }
+  figure.slot.over { outline:2px solid #60a5fa; }
+  .carved { background:#0c0e13; border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:16px; font-size:12.5px; }
+  .carved a { color:#60a5fa; }
+  .carvedviews { grid-template-columns:repeat(3,1fr); gap:6px; margin-top:10px; }
+  .carvedviews img { width:100%; aspect-ratio:1; object-fit:contain; background:#15181f; border-radius:4px; }
   @media (max-width: 980px) { main { grid-template-columns:1fr; } }
 </style>
 </head>
@@ -53,6 +63,8 @@ export const CLIENT_HTML = String.raw`<!doctype html>
   <h1>6면 분석 미리보기</h1>
   <span class="dir" id="dir"></span>
   <button id="refresh">다시 분석</button>
+  <button id="carve">3D 만들기</button>
+  <span class="hint">이미지를 칸에 끌어다 놓거나 칸을 클릭해 고르세요</span>
   <a class="cadlink" href="/cad">3D CAD 편집기 열기 →</a>
 </header>
 <main>
@@ -75,9 +87,10 @@ async function load() {
     const measure = view
       ? view.extent.width.toFixed(3) + " x " + view.extent.height.toFixed(3)
       : "없음";
-    return '<figure class="' + (view ? "" : "missing") + '">' +
+    return '<figure class="slot ' + (view ? "" : "missing") + '" data-id="' + id + '">' +
       '<img alt="' + data.labels[id] + '" src="/views/' + id + '?t=' + stamp + '" />' +
       '<figcaption><b>' + data.labels[id] + '</b><span>' + measure + '</span></figcaption>' +
+      '<div class="drop">놓기</div>' +
       '</figure>';
   }).join("");
 
@@ -103,7 +116,78 @@ async function load() {
     '</div>' +
     '<h2>항목별 점수</h2>' + checks +
     '<h2>문제 ' + report.issues.length + '건</h2><ul>' + issues + '</ul>';
+  bindSlots();
 }
+
+const picker = document.createElement("input");
+picker.type = "file";
+picker.accept = "image/*";
+let target = null;
+
+async function upload(id, file) {
+  setStatus(id, "올리는 중…");
+  const response = await fetch("/api/upload/" + id, { method: "POST", body: file });
+  if (!response.ok) throw new Error(await response.text());
+  await load();
+}
+
+function setStatus(id, text) {
+  const slot = document.querySelector('figure[data-id="' + id + '"] figcaption span');
+  if (slot) slot.textContent = text;
+}
+
+function bindSlots() {
+  for (const slot of document.querySelectorAll("figure.slot")) {
+    const id = slot.dataset.id;
+    slot.addEventListener("click", () => {
+      target = id;
+      picker.value = "";
+      picker.click();
+    });
+    slot.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      slot.classList.add("over");
+    });
+    slot.addEventListener("dragleave", () => slot.classList.remove("over"));
+    slot.addEventListener("drop", (event) => {
+      event.preventDefault();
+      slot.classList.remove("over");
+      const file = event.dataTransfer?.files?.[0];
+      if (file) upload(id, file).catch((error) => setStatus(id, "실패: " + error.message));
+    });
+  }
+}
+
+picker.addEventListener("change", () => {
+  const file = picker.files?.[0];
+  if (file && target) upload(target, file).catch((error) => setStatus(target, "실패: " + error.message));
+});
+
+document.getElementById("carve").addEventListener("click", async () => {
+  const button = document.getElementById("carve");
+  button.disabled = true;
+  button.textContent = "깎는 중…";
+  try {
+    const response = await fetch("/api/carve?res=128", { method: "POST" });
+    const text = await response.text();
+    if (!response.ok) throw new Error(text);
+    const result = JSON.parse(text);
+    document.getElementById("report").insertAdjacentHTML(
+      "afterbegin",
+      '<div class="carved"><b>3D 완성</b> · 복셀 ' + result.voxels.x + "x" + result.voxels.y + "x" +
+        result.voxels.z + " · 삼각형 " + result.triangles.toLocaleString() + "개 · 사용 뷰 " +
+        result.usedViews.length + '개<br /><a href="/model.obj" download>carved.obj 내려받기</a>' +
+        '<div class="views carvedviews">' +
+        ORDER.map((id) => '<img src="/carved-views/' + id + "?t=" + Date.now() + '" alt="' + id + '" />').join("") +
+        "</div></div>",
+    );
+  } catch (error) {
+    alert("3D 만들기 실패: " + error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = "3D 만들기";
+  }
+});
 
 document.getElementById("refresh").addEventListener("click", load);
 load().catch((error) => {
