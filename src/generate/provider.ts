@@ -25,8 +25,8 @@ export interface GeneratedMesh {
 export interface MeshProvider {
   readonly id: string;
   readonly label: string;
-  /** Environment variable holding the credential. */
-  readonly credentialEnv: string;
+  /** Environment variable holding the credential; omitted when none is needed. */
+  readonly credentialEnv?: string;
   generate(request: GenerateRequest): Promise<GeneratedMesh>;
 }
 

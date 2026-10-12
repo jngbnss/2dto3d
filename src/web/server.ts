@@ -5,6 +5,7 @@ import { VIEWS, VIEW_IDS, isViewId } from "../views.ts";
 import { analyzeViewSet } from "../analyze/report.ts";
 import { viewPathsFromDirectory } from "../pipeline.ts";
 import { CLIENT_HTML } from "./client.ts";
+import { handleCadRequest } from "./cad.ts";
 
 export interface ServerOptions {
   readonly port: number;
@@ -64,6 +65,10 @@ async function handle(
   directory: string,
 ): Promise<void> {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+
+  // CAD editor routes are additive: they claim only `/cad` and `/api/cad/...`,
+  // and fall through untouched for every existing six-view route.
+  if (await handleCadRequest(request, response, directory)) return;
 
   if (url.pathname === "/") {
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });

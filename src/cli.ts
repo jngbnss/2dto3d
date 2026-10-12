@@ -14,7 +14,7 @@ import {
   runFromImage,
   viewPathsFromDirectory,
 } from "./pipeline.ts";
-import { PROVIDERS } from "./generate/index.ts";
+import { DEFAULT_PROVIDER, PROVIDERS } from "./generate/index.ts";
 import { startServer } from "./web/server.ts";
 
 const USAGE = `sixview — 2D 이미지 1장에서 6면 뷰를 만들고 3D 복원 적합성을 분석합니다.
@@ -24,7 +24,7 @@ const USAGE = `sixview — 2D 이미지 1장에서 6면 뷰를 만들고 3D 복�
   sixview render  <mesh.glb|obj> [--out <dir>] [--size <px>]
   sixview analyze <dir> | --front a.png --back b.png … [--json <file>]
   sixview carve   <dir> [--obj <file>] [--res <n>] [--tolerance <n>] [--json <file>]
-  sixview run     <image> --provider <${Object.keys(PROVIDERS).join("|")}> [--model <id>] [--out <dir>] [--size <px>]
+  sixview run     <image> [--provider <${Object.keys(PROVIDERS).join("|")}>] [--model <id>] [--out <dir>] [--size <px>]
   sixview serve   [--dir <dir>] [--port <n>]
 
 옵션
@@ -36,9 +36,9 @@ const USAGE = `sixview — 2D 이미지 1장에서 6면 뷰를 만들고 3D 복�
   --model      공급자 모델 id (기본값은 공급자별 문서 참조)
   --json       분석 결과를 JSON으로 저장
 
-공급자 자격 증명
+공급자 (기본 ${DEFAULT_PROVIDER})
 ${Object.values(PROVIDERS)
-  .map((p) => `  ${p.id.padEnd(10)} ${p.credentialEnv} — ${p.label}`)
+  .map((p) => `  ${p.id.padEnd(12)} ${(p.credentialEnv ?? "키 불필요").padEnd(22)} ${p.label}`)
   .join("\n")}
 `;
 
@@ -139,13 +139,9 @@ async function main(argv: string[]): Promise<number> {
     case "run": {
       const imagePath = positionals[1];
       if (!imagePath) throw new Error("입력 이미지가 필요합니다: sixview run <image.png>");
-      const provider = values.provider;
-      if (!provider) {
-        throw new Error(`--provider가 필요합니다 (${Object.keys(PROVIDERS).join(", ")}).`);
-      }
       const result = await runFromImage(resolve(imagePath), {
         ...renderOptions,
-        provider,
+        provider: values.provider ?? DEFAULT_PROVIDER,
         model: values.model,
         outputDirectory: outDirectory,
         onProgress: (message) => process.stderr.write(`· ${message}\n`),

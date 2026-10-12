@@ -17,6 +17,8 @@ export const CLIENT_HTML = String.raw`<!doctype html>
   .dir { color:var(--muted); font-family:ui-monospace,Consolas,monospace; font-size:12px; }
   button { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 14px; cursor:pointer; font-size:13px; }
   button:hover { border-color:#3a4150; }
+  .cadlink { margin-left:auto; background:#1b2a44; color:#9cc4ff; border:1px solid #2f4f80; border-radius:6px; padding:6px 14px; font-size:13px; text-decoration:none; }
+  .cadlink:hover { border-color:#4c9aff; }
   main { padding:24px; display:grid; grid-template-columns:minmax(0,2fr) minmax(320px,1fr); gap:24px; align-items:start; }
   .views { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
   figure { margin:0; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
@@ -51,6 +53,7 @@ export const CLIENT_HTML = String.raw`<!doctype html>
   <h1>6면 분석 미리보기</h1>
   <span class="dir" id="dir"></span>
   <button id="refresh">다시 분석</button>
+  <a class="cadlink" href="/cad">3D CAD 편집기 열기 →</a>
 </header>
 <main>
   <section class="views" id="views"></section>
