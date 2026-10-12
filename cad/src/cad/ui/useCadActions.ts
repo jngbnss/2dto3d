@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useProjectStore } from "../core/projectStore";
 import {
-  addHoles, addObject, booleanCombine, childrenOf, descendantsOf, duplicateObjects,
+  addHoles, addObject, booleanCombine, descendantsOf, duplicateObjects,
   groupObjects, isEffectivelyVisible, planBoolean, removeObjects, solidRecipeInWorld, topLevelOf, ungroup,
 } from "../core/objectManager";
 import { createMesh, createSolid, DEFAULT_PRIMITIVES, PRIMITIVE_LABEL } from "../core/factories";
@@ -349,4 +349,3 @@ export function useCadActions(renderer: CADRenderer | null, engine: CADGeometryE
 }
 
 export type CadActions = ReturnType<typeof useCadActions>;
-export { childrenOf };

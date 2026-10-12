@@ -1,5 +1,3 @@
-import type { MeshAsset } from "../core/types";
-
 /**
  * Bridge between an AI 2D→3D generation pipeline and the CAD workspace.
  *
@@ -26,6 +24,11 @@ export interface AiAssetRef {
    * the user it did so. Omit when the asset already carries real dimensions.
    */
   normalizeToMm?: number;
+  /**
+   * Up axis of the asset's own frame. Meshes authored Y-up (glTF convention, and
+   * sixview's object frame) are reframed to the editor's Z-up world on import.
+   */
+  upAxis?: "y" | "z";
 }
 
 export interface AiModelDescriptor {
@@ -168,37 +171,3 @@ export function createHttpAdapter(baseUrl: string): AiPipelineAdapter {
   };
 }
 
-/* ------------------------------------------------------------ local adapter */
-
-/**
- * Lets the user hand the workspace a file produced by any pipeline, with no
- * server involved. Registered descriptors live for the session only.
- */
-export function createLocalAdapter(): AiPipelineAdapter & {
-  register(descriptor: AiModelDescriptor): void;
-} {
-  const entries = new Map<string, AiModelDescriptor>();
-  return {
-    id: "local",
-    label: "Local results",
-    description: "2D→3D results you hand over from disk (STL, GLB or STEP).",
-    register(descriptor) {
-      entries.set(descriptor.id, descriptor);
-    },
-    async list() {
-      return [...entries.values()].sort((a, b) => b.createdAt - a.createdAt);
-    },
-    async load(id) {
-      const found = entries.get(id);
-      if (!found) throw new Error("That result is no longer available in this session");
-      return found;
-    },
-  };
-}
-
-export interface ImportedAiModel {
-  descriptor: AiModelDescriptor;
-  classification: AssetClassification;
-  meshes?: { name: string; asset: MeshAsset }[];
-  stepText?: string;
-}

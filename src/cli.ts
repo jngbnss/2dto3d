@@ -16,6 +16,7 @@ import {
 } from "./pipeline.ts";
 import { DEFAULT_PROVIDER, PROVIDERS } from "./generate/index.ts";
 import { startServer } from "./web/server.ts";
+import { cadEditorBuilt } from "./web/cad.ts";
 
 const USAGE = `sixview — 2D 이미지 1장에서 6면 뷰를 만들고 3D 복원 적합성을 분석합니다.
 
@@ -25,7 +26,7 @@ const USAGE = `sixview — 2D 이미지 1장에서 6면 뷰를 만들고 3D 복�
   sixview analyze <dir> | --front a.png --back b.png … [--json <file>]
   sixview carve   <dir> [--obj <file>] [--res <n>] [--tolerance <n>] [--json <file>]
   sixview run     <image> [--provider <${Object.keys(PROVIDERS).join("|")}>] [--model <id>] [--out <dir>] [--size <px>]
-  sixview serve   [--dir <dir>] [--port <n>]
+  sixview serve   [--dir <dir>] [--port <n>]   6면 미리보기 + /cad 3D CAD 편집기
 
 옵션
   --out        결과 디렉터리 (기본 ./out)
@@ -157,7 +158,13 @@ async function main(argv: string[]): Promise<number> {
       const port = values.port === undefined ? 5173 : Number.parseInt(values.port, 10);
       const directory = resolve(values.dir ?? outDirectory);
       const server = await startServer({ port, directory });
-      process.stdout.write(`웹 미리보기: ${server.url}\n뷰 디렉터리: ${directory}\n종료: Ctrl+C\n`);
+      const cadReady = await cadEditorBuilt();
+      process.stdout.write(
+        `웹 미리보기: ${server.url}\n` +
+          `3D CAD 편집기: ${server.url}cad` +
+          (cadReady ? "\n" : "  (미빌드 — cd cad && npm install && npm run build)\n") +
+          `뷰 디렉터리: ${directory}\n종료: Ctrl+C\n`,
+      );
       const { promise } = Promise.withResolvers<number>();
       return promise; // Serves until the process is interrupted.
     }

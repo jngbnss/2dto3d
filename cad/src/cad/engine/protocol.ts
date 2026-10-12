@@ -50,12 +50,3 @@ export type ErrorCode =
   | "UNSUPPORTED"
   | "UNKNOWN";
 
-export class KernelError extends Error {
-  readonly code: ErrorCode;
-
-  constructor(message: string, code: ErrorCode = "UNKNOWN") {
-    super(message);
-    this.name = "KernelError";
-    this.code = code;
-  }
-}

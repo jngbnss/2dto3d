@@ -17,7 +17,10 @@
     "demo": "node src/cli.ts demo --out out",
     "serve": "node src/cli.ts serve --dir out",
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "cad:install": "npm --prefix cad install",
+    "cad:build": "npm --prefix cad run build",
+    "cad:dev": "npm --prefix cad run dev"
   },
   "dependencies": {
     "sharp": "^0.34.4"

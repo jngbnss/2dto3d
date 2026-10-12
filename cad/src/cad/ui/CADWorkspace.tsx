@@ -16,7 +16,7 @@ import { useProjectStore, flushAutosave } from "../core/projectStore";
 import { loadAutosave } from "../core/persistence";
 import { createDemoAdapter } from "../ai/demoAdapter";
 import { createHttpAdapter, createSixviewAdapter, type AiPipelineAdapter } from "../ai/aiAdapter";
-import { importGLTF, importOBJ, importSTL, normalizeAssetToMm } from "../file/fileManager";
+import { importGLTF, importOBJ, importSTL, prepareImportedAsset } from "../file/fileManager";
 import { ErrorBoundary } from "./ErrorBoundary";
 
 export function CADWorkspace() {
@@ -175,17 +175,27 @@ export function CADWorkspace() {
           : format === "obj" ? [await importOBJ(blob, descriptor.name)]
             : await importGLTF(blob, descriptor.name);
 
-      // Reconstruction output has no physical scale; normalise and say so.
-      const targetMm = descriptor.asset?.normalizeToMm;
-      let scaleNote = "";
+      // Reconstruction output arrives unitless and often Y-up; fix both, and say so.
+      const ref = descriptor.asset;
+      const notes: string[] = [];
       const placed = meshes.map((m) => {
-        if (!targetMm) return m;
-        const { asset, factor, sourceSize } = normalizeAssetToMm(m.asset, targetMm);
-        if (factor !== 1) {
-          scaleNote = ` 원본은 무차원 좌표(최대 변 ${Math.max(...sourceSize).toFixed(3)})라 가장 긴 변을 ${targetMm} mm로 맞췄습니다(×${factor.toFixed(2)}). 실제 치수는 속성 패널에서 조정하세요.`;
+        const prepared = prepareImportedAsset(m.asset, {
+          ...(ref?.upAxis ? { upAxis: ref.upAxis } : {}),
+          ...(ref?.normalizeToMm ? { normalizeToMm: ref.normalizeToMm } : {}),
+        });
+        if (prepared.reframed && !notes.includes("REFRAME")) notes.push("REFRAME");
+        if (prepared.factor !== 1 && !notes.some((n) => n.startsWith("SCALE"))) {
+          notes.push(`SCALE${Math.max(...prepared.sourceSize).toFixed(3)}|${prepared.factor.toFixed(2)}`);
         }
-        return { ...m, asset };
+        return { ...m, asset: prepared.asset };
       });
+      const scaleNote = notes
+        .map((n) =>
+          n === "REFRAME"
+            ? " 원본이 Y-up 좌표계라 편집기의 Z-up으로 변환했습니다."
+            : ` 원본은 무차원 좌표(최대 변 ${n.slice(5).split("|")[0]})라 가장 긴 변을 ${ref?.normalizeToMm} mm로 맞췄습니다(×${n.split("|")[1]}). 실제 치수는 속성 패널에서 조정하세요.`,
+        )
+        .join("");
 
       actions.addMeshObjects(placed, "ai-generated", provenance);
       const triangles = placed.reduce((sum, m) => sum + m.asset.triangleCount, 0);

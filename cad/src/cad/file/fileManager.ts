@@ -113,52 +113,88 @@ export async function importOBJ(file: File | Blob, name: string): Promise<Import
   return { name, asset };
 }
 
-export interface NormalizationResult {
+export interface PrepareOptions {
+  /** Up axis of the source frame. "y" is reframed to the editor's Z-up world. */
+  upAxis?: "y" | "z";
+  /** Scale so the longest bounding-box axis measures this many millimetres. */
+  normalizeToMm?: number;
+}
+
+export interface PreparedAsset {
   asset: MeshAsset;
-  /** Multiplier applied to every coordinate. 1 means the asset was left alone. */
+  /** Uniform scale applied. 1 means the asset already had real dimensions. */
   factor: number;
-  /** Bounding-box size before scaling, in the asset's own units. */
+  /** Bounding-box size before scaling, in the source's own units. */
   sourceSize: [number, number, number];
+  reframed: boolean;
 }
 
 /**
- * Scales an asset so its longest bounding-box axis measures `targetMm`.
+ * Brings an imported mesh into the editor's world: Z-up, millimetres, centred on
+ * its own origin — in one pass over the vertex buffer.
  *
- * Reconstruction pipelines work in a normalised frame — the output has no
- * physical size. Dropping it in at 1 unit = 1 mm would put a 0.5 mm speck in the
- * workspace. Baking the scale into the vertices (rather than into the object's
- * scale factor) means the dimensions the panel reports are the real ones.
+ * Reconstruction output routinely arrives Y-up and unitless. Importing it as-is
+ * drops a 0.5 mm part lying on its side into the workspace. Baking the fix into
+ * the vertices (rather than into the object's transform) means the dimensions
+ * the properties panel reports are the real ones.
  */
-export function normalizeAssetToMm(asset: MeshAsset, targetMm: number): NormalizationResult {
-  const p = asset.positions;
-  if (p.length < 3 || !(targetMm > 0)) return { asset, factor: 1, sourceSize: [0, 0, 0] };
-  const min = [Infinity, Infinity, Infinity];
-  const max = [-Infinity, -Infinity, -Infinity];
-  for (let i = 0; i < p.length; i += 3) {
+export function prepareImportedAsset(asset: MeshAsset, options: PrepareOptions = {}): PreparedAsset {
+  const source = asset.positions;
+  const reframed = options.upAxis === "y";
+  if (source.length < 3) return { asset, factor: 1, sourceSize: [0, 0, 0], reframed: false };
+
+  // Y-up -> Z-up is a +90° rotation about X: (x, y, z) -> (x, -z, y).
+  const positions = new Float32Array(source.length);
+  for (let i = 0; i < source.length; i += 3) {
+    const x = source[i];
+    const y = source[i + 1];
+    const z = source[i + 2];
+    positions[i] = x;
+    positions[i + 1] = reframed ? -z : y;
+    positions[i + 2] = reframed ? y : z;
+  }
+
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < positions.length; i += 3) {
     for (let a = 0; a < 3; a += 1) {
-      const v = p[i + a];
+      const v = positions[i + a];
       if (v < min[a]) min[a] = v;
       if (v > max[a]) max[a] = v;
     }
   }
   const sourceSize: [number, number, number] = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
   const longest = Math.max(...sourceSize);
-  if (!(longest > 0)) return { asset, factor: 1, sourceSize };
-  const factor = targetMm / longest;
-  if (Math.abs(factor - 1) < 1e-9) return { asset, factor: 1, sourceSize };
+  const target = options.normalizeToMm;
+  const factor = target && target > 0 && longest > 0 ? target / longest : 1;
 
-  // Recentre on the bounding-box centre at the same time: the object's own
-  // origin should be its centre, like every primitive this editor creates.
   const cx = (min[0] + max[0]) / 2;
   const cy = (min[1] + max[1]) / 2;
   const cz = (min[2] + max[2]) / 2;
-  const scaled = new Float32Array(p.length);
-  for (let i = 0; i < p.length; i += 3) {
-    scaled[i] = (p[i] - cx) * factor;
-    scaled[i + 1] = (p[i + 1] - cy) * factor;
-    scaled[i + 2] = (p[i + 2] - cz) * factor;
+  for (let i = 0; i < positions.length; i += 3) {
+    positions[i] = (positions[i] - cx) * factor;
+    positions[i + 1] = (positions[i + 1] - cy) * factor;
+    positions[i + 2] = (positions[i + 2] - cz) * factor;
   }
-  return { asset: { ...asset, positions: scaled }, factor, sourceSize };
+
+  // Uniform scale leaves normals valid; only the reframe rotation touches them.
+  let normals = asset.normals;
+  if (normals && reframed) {
+    const rotated = new Float32Array(normals.length);
+    for (let i = 0; i < normals.length; i += 3) {
+      rotated[i] = normals[i];
+      rotated[i + 1] = -normals[i + 2];
+      rotated[i + 2] = normals[i + 1];
+    }
+    normals = rotated;
+  }
+
+  return {
+    asset: { ...asset, positions, ...(normals ? { normals } : {}) },
+    factor,
+    sourceSize,
+    reframed,
+  };
 }
 
 export function geometryToAsset(geometry: BufferGeometry, name: string): MeshAsset {

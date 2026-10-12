@@ -3,7 +3,7 @@ import { createGroup, identityTransform } from "./factories";
 import { cloneTransform, relativeTransform, worldTransform } from "./transforms";
 import type {
   BooleanOp, CadDocument, CadObject, Feature, GroupObject, HoleSpec,
-  MeshObject, SolidObject, SolidRecipe, Transform, Vec3,
+  SolidObject, SolidRecipe, Transform, Vec3,
 } from "./types";
 
 /**
@@ -187,46 +187,6 @@ function withFeatureChild(feature: Feature, index: number, child: Feature): Feat
   }
 }
 
-/** Placement of a nested operand, needed to show it in the right place. */
-export function transformAt(root: Feature, path: number[]): Transform | null {
-  if (path.length === 0) return null;
-  let current: Feature = root;
-  let transform: Transform | null = null;
-  for (const index of path) {
-    const children = featureChildren(current);
-    const child = children[index];
-    if (!child) return null;
-    transform = child.transform;
-    current = child.feature;
-  }
-  return transform;
-}
-
-export function setTransformAt(root: Feature, path: number[], transform: Transform): Feature {
-  if (path.length === 0) return root;
-  const [head, ...rest] = path;
-  const children = featureChildren(root);
-  const child = children[head];
-  if (!child) return root;
-  if (rest.length === 0) {
-    return withFeatureChildRecipe(root, head, { ...child, transform: cloneTransform(transform) });
-  }
-  return withFeatureChild(root, head, setTransformAt(child.feature, rest, transform));
-}
-
-function withFeatureChildRecipe(feature: Feature, index: number, recipe: SolidRecipe): Feature {
-  switch (feature.type) {
-    case "boolean":
-      return { ...feature, operands: feature.operands.map((op, i) => (i === index ? recipe : op)) };
-    case "hole":
-    case "fillet":
-    case "chamfer":
-      return { ...feature, base: recipe };
-    default:
-      return feature;
-  }
-}
-
 /* -------------------------------------------------------------- duplication */
 
 export function duplicateObjects(doc: CadDocument, ids: string[], offset: Vec3 = [0, 0, 0]): string[] {
@@ -402,15 +362,6 @@ export function addHoles(doc: CadDocument, id: string, holes: HoleSpec[]) {
   }
 }
 
-export function removeHole(doc: CadDocument, id: string, holeId: string) {
-  const o = doc.objects[id];
-  if (o?.kind !== "solid" || o.feature.type !== "hole") return;
-  const holes = o.feature.holes.filter((h) => h.id !== holeId);
-  o.feature = holes.length
-    ? { ...o.feature, holes }
-    : o.feature.base.feature;
-}
-
 export function applyEdgeTreatment(
   doc: CadDocument,
   id: string,
@@ -441,5 +392,3 @@ export function logOperation(doc: CadDocument, op: string, detail: string, objec
   doc.operationLog.push({ id: makeId("op"), at: Date.now(), op, detail, objectIds });
   if (doc.operationLog.length > 500) doc.operationLog.splice(0, doc.operationLog.length - 500);
 }
-
-export type { MeshObject };

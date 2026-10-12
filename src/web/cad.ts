@@ -87,6 +87,13 @@ export interface CadModelDescriptor {
      * dropping a 0.5 mm part into the workspace.
      */
     readonly normalizeToMm?: number;
+    /**
+     * sixview's object frame is +Y up (see `src/views.ts`), while the CAD
+     * workspace is Z-up like every mechanical CAD system. Declaring the axis
+     * lets the importer reframe the geometry instead of leaving the part lying
+     * on its side.
+     */
+    readonly upAxis?: "y" | "z";
   } | null;
   readonly meta?: Readonly<Record<string, string | number>>;
 }
@@ -126,6 +133,7 @@ export async function listModels(directory: string): Promise<CadModelDescriptor[
         url: `/api/cad/asset/${candidate.id}`,
         byteSize: info.size,
         normalizeToMm: 100,
+        upAxis: "y",
       },
       meta: {
         파이프라인: "sixview",

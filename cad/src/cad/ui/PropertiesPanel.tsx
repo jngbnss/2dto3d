@@ -26,6 +26,7 @@ export function PropertiesPanel() {
   const buildErrors = useProjectStore((s) => s.buildErrors);
   const commit = useProjectStore((s) => s.commit);
   const setFeaturePath = useProjectStore((s) => s.setFeaturePath);
+  const setStatus = useProjectStore((s) => s.setStatus);
   const unit = doc.displayUnit;
   const [edgeSize, setEdgeSize] = useState(3);
 
@@ -160,18 +161,24 @@ export function PropertiesPanel() {
               <button
                 type="button"
                 className="btn"
-                onClick={() => commit("Fillet edges", (draft) => applyEdgeTreatment(draft, object.id, "fillet", edgeSize), {
-                  log: `fillet r=${edgeSize}mm`, ids: [object.id],
-                })}
+                onClick={() => {
+                  commit("Fillet edges", (draft) => applyEdgeTreatment(draft, object.id, "fillet", edgeSize), {
+                    log: `fillet r=${edgeSize}mm`, ids: [object.id],
+                  });
+                  setStatus("info", `Filleting every edge of "${object.name}" at R${edgeSize} mm…`);
+                }}
               >
                 Fillet all edges
               </button>
               <button
                 type="button"
                 className="btn"
-                onClick={() => commit("Chamfer edges", (draft) => applyEdgeTreatment(draft, object.id, "chamfer", edgeSize), {
-                  log: `chamfer ${edgeSize}mm`, ids: [object.id],
-                })}
+                onClick={() => {
+                  commit("Chamfer edges", (draft) => applyEdgeTreatment(draft, object.id, "chamfer", edgeSize), {
+                    log: `chamfer ${edgeSize}mm`, ids: [object.id],
+                  });
+                  setStatus("info", `Chamfering every edge of "${object.name}" at ${edgeSize} mm…`);
+                }}
               >
                 Chamfer all edges
               </button>
@@ -180,9 +187,13 @@ export function PropertiesPanel() {
               <button
                 type="button"
                 className="btn btn--ghost"
-                onClick={() => commit("Remove last feature", (draft) => {
-                  removeLastFeature(draft, object.id);
-                })}
+                onClick={() => {
+                  const removed = FEATURE_LABEL[object.feature.type];
+                  commit("Remove last feature", (draft) => {
+                    removeLastFeature(draft, object.id);
+                  }, { log: `remove ${object.feature.type}`, ids: [object.id] });
+                  setStatus("success", `${removed} removed from "${object.name}"`);
+                }}
               >
                 Remove last feature ({FEATURE_LABEL[object.feature.type]})
               </button>

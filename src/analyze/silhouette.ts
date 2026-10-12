@@ -43,6 +43,8 @@ const BORDER_RING = 2;
 const HUE_BINS = 24;
 /** Minimum RGB distance from the keyed background colour, in 0..255 units. */
 const MIN_KEY_DISTANCE = 28;
+/** Width in pixels of a leak channel that gets sealed before masking. */
+const LEAK_SEAL_RADIUS = 3;
 
 export function extractSilhouette(raster: Raster): Silhouette {
   const { width, height, data } = raster;
@@ -54,19 +56,158 @@ export function extractSilhouette(raster: Raster): Silhouette {
       mask[i] = (data[p] ?? 0) >= ALPHA_THRESHOLD ? 1 : 0;
     }
   } else {
-    const bg = keyColor(raster);
-    const threshold = Math.max(MIN_KEY_DISTANCE, bg.spread * 3);
-    const cut = threshold * threshold;
-    for (let i = 0, p = 0; i < mask.length; i++, p += 4) {
-      const dr = (data[p] ?? 0) - bg.r;
-      const dg = (data[p + 1] ?? 0) - bg.g;
-      const db = (data[p + 2] ?? 0) - bg.b;
-      const transparent = (data[p + 3] ?? 255) < ALPHA_THRESHOLD;
-      mask[i] = !transparent && dr * dr + dg * dg + db * db > cut ? 1 : 0;
-    }
+    floodBackground(raster, mask);
   }
 
   return describe(raster, mask, source);
+}
+
+/**
+ * Background removal by flood fill from the frame border.
+ *
+ * Global colour keying cannot separate a white object on a white background —
+ * the common case for product shots and rendered reference sheets. Filling
+ * inward from the border instead stops at the first edge it meets, so the object
+ * survives even when it shares the background's colour.
+ */
+function floodBackground(raster: Raster, mask: Uint8Array): void {
+  const { width, height, data } = raster;
+  const background = new Uint8Array(mask.length);
+  const stack = new Int32Array(mask.length);
+  let top = 0;
+
+  const push = (index: number): void => {
+    if (background[index] === 1) return;
+    background[index] = 1;
+    stack[top++] = index;
+  };
+
+  const bg = keyColor(raster);
+  const tolerance = Math.max(MIN_KEY_DISTANCE, bg.spread * 3);
+  const cut = tolerance * tolerance;
+
+  for (let x = 0; x < width; x++) {
+    push(x);
+    push((height - 1) * width + x);
+  }
+  for (let y = 0; y < height; y++) {
+    push(y * width);
+    push(y * width + width - 1);
+  }
+
+  // Every candidate is compared against the seed background colour, never against
+  // its own neighbour: a neighbour-relative test walks up a soft gradient and
+  // leaks through anti-aliased outlines into a same-coloured object.
+  while (top > 0) {
+    const index = stack[--top] ?? 0;
+    const x = index % width;
+    const y = (index / width) | 0;
+
+    const spread = (neighbour: number): void => {
+      if (background[neighbour] === 1) return;
+      const q = neighbour * 4;
+      if ((data[q + 3] ?? 255) < ALPHA_THRESHOLD) {
+        push(neighbour);
+        return;
+      }
+      // no edge gate: panel frames would block the fill before it starts
+      const dr = (data[q] ?? 0) - bg.r;
+      const dg = (data[q + 1] ?? 0) - bg.g;
+      const db = (data[q + 2] ?? 0) - bg.b;
+      if (dr * dr + dg * dg + db * db <= cut) push(neighbour);
+    };
+
+    if (x > 0) spread(index - 1);
+    if (x < width - 1) spread(index + 1);
+    if (y > 0) spread(index - width);
+    if (y < height - 1) spread(index + width);
+  }
+
+  sealLeaks(background, width, height);
+  for (let i = 0; i < mask.length; i++) mask[i] = background[i] === 1 ? 0 : 1;
+}
+
+/**
+ * Seals thin leaks in the flooded background.
+ *
+ * A soft outline lets the fill slip through a few pixels of gap and swallow the
+ * object's interior. Eroding the background closes any channel narrower than
+ * `LEAK_SEAL_RADIUS`; whatever is then cut off from the frame was never
+ * background, so it is handed back to the object before the erosion is undone.
+ */
+function sealLeaks(background: Uint8Array, width: number, height: number): void {
+  const radius = LEAK_SEAL_RADIUS;
+  const eroded = new Uint8Array(background.length);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      if (background[i] !== 1) continue;
+      let solid = 1;
+      for (let dy = -radius; dy <= radius && solid === 1; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= height) continue;
+        for (let dx = -radius; dx <= radius; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= width) continue;
+          if (background[ny * width + nx] !== 1) {
+            solid = 0;
+            break;
+          }
+        }
+      }
+      eroded[i] = solid;
+    }
+  }
+
+  // Keep only the eroded background still reachable from the frame.
+  const reachable = new Uint8Array(background.length);
+  const stack = new Int32Array(background.length);
+  let top = 0;
+  const push = (index: number): void => {
+    if (reachable[index] === 1 || eroded[index] !== 1) return;
+    reachable[index] = 1;
+    stack[top++] = index;
+  };
+  for (let x = 0; x < width; x++) {
+    push(x);
+    push((height - 1) * width + x);
+  }
+  for (let y = 0; y < height; y++) {
+    push(y * width);
+    push(y * width + width - 1);
+  }
+  while (top > 0) {
+    const i = stack[--top] ?? 0;
+    const x = i % width;
+    const y = (i / width) | 0;
+    if (x > 0) push(i - 1);
+    if (x < width - 1) push(i + 1);
+    if (y > 0) push(i - width);
+    if (y < height - 1) push(i + width);
+  }
+
+  // Dilate the surviving background back, but never past the original fill.
+  const sealed = new Uint8Array(background.length);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      if (background[i] !== 1) continue;
+      for (let dy = -radius; dy <= radius && sealed[i] === 0; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= height) continue;
+        for (let dx = -radius; dx <= radius; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= width) continue;
+          if (reachable[ny * width + nx] === 1) {
+            sealed[i] = 1;
+            break;
+          }
+        }
+      }
+    }
+  }
+  background.set(sealed);
 }
 
 /** Median colour of the border ring, plus how much that ring varies. */
