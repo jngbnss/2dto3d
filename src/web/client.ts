@@ -51,6 +51,11 @@ export const CLIENT_HTML = String.raw`<!doctype html>
     font-size:13px; color:var(--text); background:rgba(10,12,18,.72); opacity:0; transition:opacity .12s; pointer-events:none; }
   figure.slot:hover .drop, figure.slot.over .drop { opacity:1; }
   figure.slot.over { outline:2px solid #60a5fa; }
+  figure.slot button.clear { position:absolute; top:6px; right:6px; width:24px; height:24px; padding:0;
+    border-radius:50%; background:rgba(12,14,19,.82); border:1px solid var(--line); color:var(--muted);
+    font-size:13px; line-height:1; opacity:0; transition:opacity .12s; }
+  figure.slot:hover button.clear { opacity:1; }
+  figure.slot button.clear:hover { color:var(--bad); border-color:var(--bad); }
   .carved { background:#0c0e13; border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:16px; font-size:12.5px; }
   .carved a { color:#60a5fa; }
   .carvedviews { grid-template-columns:repeat(3,1fr); gap:6px; margin-top:10px; }
@@ -64,6 +69,7 @@ export const CLIENT_HTML = String.raw`<!doctype html>
   <span class="dir" id="dir"></span>
   <button id="refresh">다시 분석</button>
   <button id="carve">3D 만들기</button>
+  <button id="clearAll">전부 비우기</button>
   <span class="hint">이미지를 칸에 끌어다 놓거나 칸을 클릭해 고르세요</span>
   <a class="cadlink" href="/cad">3D CAD 편집기 열기 →</a>
 </header>
@@ -91,6 +97,7 @@ async function load() {
       '<img alt="' + data.labels[id] + '" src="/views/' + id + '?t=' + stamp + '" />' +
       '<figcaption><b>' + data.labels[id] + '</b><span>' + measure + '</span></figcaption>' +
       '<div class="drop">놓기</div>' +
+      (view ? '<button class="clear" title="이 뷰 지우기">✕</button>' : "") +
       '</figure>';
   }).join("");
 
@@ -144,6 +151,15 @@ function bindSlots() {
       picker.value = "";
       picker.click();
     });
+    const clear = slot.querySelector("button.clear");
+    if (clear) {
+      clear.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        setStatus(id, "지우는 중…");
+        await fetch("/api/clear/" + id, { method: "POST" });
+        await load();
+      });
+    }
     slot.addEventListener("dragover", (event) => {
       event.preventDefault();
       slot.classList.add("over");
@@ -187,6 +203,12 @@ document.getElementById("carve").addEventListener("click", async () => {
     button.disabled = false;
     button.textContent = "3D 만들기";
   }
+});
+
+document.getElementById("clearAll").addEventListener("click", async () => {
+  if (!confirm("6칸을 모두 비울까요?")) return;
+  await Promise.all(ORDER.map((id) => fetch("/api/clear/" + id, { method: "POST" })));
+  await load();
 });
 
 document.getElementById("refresh").addEventListener("click", load);
