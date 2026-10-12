@@ -1,0 +1,29 @@
+{
+  "name": "sixview",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Single 2D image to six orthographic views: generation + consistency analysis for 3D reconstruction",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "sixview": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "cli": "node src/cli.ts",
+    "demo": "node src/cli.ts demo --out out",
+    "serve": "node src/cli.ts serve --dir out",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "sharp": "^0.34.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}
