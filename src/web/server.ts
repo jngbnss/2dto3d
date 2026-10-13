@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import sharp from "sharp";
 import { VIEWS, VIEW_IDS, imageAxes, isViewId, type ViewId } from "../views.ts";
-import { loadTransforms, saveTransforms, updateTransform, type ViewTransform } from "../orientation.ts";
+import { loadTransforms, restoreAutomaticPlacement, saveTransforms, updateTransform, type ViewTransform } from "../orientation.ts";
 import { prepareViewSet } from "../preprocess.ts";
 import { validate } from "../validation.ts";
 import { reconstructFromViews, viewPathsFromDirectory, writePrepared, type ReconstructMethod } from "../pipeline.ts";
@@ -123,6 +123,21 @@ async function handle(request: IncomingMessage, response: ServerResponse, direct
       response,
       await serial(async () => {
         await swapViews(directory, a, b);
+        await rm(join(directory, RESULT_FILE), { force: true });
+        return state(directory);
+      }),
+    );
+  }
+
+  if (path === "/api/auto-align" && post) {
+    return json(
+      response,
+      await serial(async () => {
+        const transforms = await loadTransforms(directory);
+        await saveTransforms(
+          directory,
+          Object.fromEntries(VIEW_IDS.map((id) => [id, restoreAutomaticPlacement(transforms[id])])) as Record<ViewId, ViewTransform>,
+        );
         await rm(join(directory, RESULT_FILE), { force: true });
         return state(directory);
       }),

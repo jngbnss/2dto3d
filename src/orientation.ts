@@ -65,6 +65,14 @@ export function updateTransform(base: ViewTransform, patch: unknown): ViewTransf
   };
 }
 
+/**
+ * Removes only manual placement overrides. Orientation and crop stay intact,
+ * then `prepareViewSet` re-solves common scale and centres every silhouette.
+ */
+export function restoreAutomaticPlacement(transform: ViewTransform): ViewTransform {
+  return { ...transform, scale: 1, offsetX: 0, offsetY: 0 };
+}
+
 /** Reads `views.json` from a view directory; absent or malformed entries fall back to identity. */
 export async function loadTransforms(directory: string): Promise<Record<ViewId, ViewTransform>> {
   let stored: Record<string, unknown> = {};

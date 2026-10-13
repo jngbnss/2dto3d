@@ -52,6 +52,11 @@ export function swapViews(a: ViewId, b: ViewId): Promise<State> {
   return request(`/api/swap?a=${a}&b=${b}`, { method: "POST" });
 }
 
+/** Re-applies mask-based common scale and centre alignment to every uploaded view. */
+export function autoAlign(): Promise<State> {
+  return request("/api/auto-align", { method: "POST" });
+}
+
 export function generate(options: GenerateOptions): Promise<State> {
   return postJson("/api/generate", options);
 }
