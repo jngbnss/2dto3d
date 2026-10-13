@@ -35,6 +35,7 @@ interface StoredResult {
   readonly triangles: number;
   readonly resolution: number;
   readonly method: ReconstructMethod;
+  readonly strategy?: string;
   readonly warning?: string;
   readonly score: number;
   readonly colourScore: number;
@@ -227,7 +228,9 @@ async function generate(directory: string, body: unknown): Promise<unknown> {
 
   const result = await reconstructFromViews(paths, await loadTransforms(directory), {
     outputDirectory: directory,
-    method: options["method"] === "ai" ? "ai" : "silhouette",
+    method: options["method"] === "ai" || options["method"] === "geometry" || options["method"] === "hybrid"
+      ? options["method"]
+      : "silhouette",
     ...(resolution === undefined ? {} : { resolution }),
     ...(smoothing === undefined ? {} : { smoothing }),
     symmetry: options["symmetry"] === true,
@@ -239,6 +242,7 @@ async function generate(directory: string, body: unknown): Promise<unknown> {
     triangles: result.mesh.indices.length / 3,
     resolution: result.resolution,
     method: result.method,
+    ...(result.strategy ? { strategy: result.strategy } : {}),
     ...(result.warning ? { warning: result.warning } : {}),
     score: result.score,
     colourScore: result.colourScore,
@@ -300,6 +304,7 @@ async function state(directory: string): Promise<unknown> {
       triangles: stored.triangles,
       resolution: stored.resolution,
       method: stored.method ?? "silhouette",
+      strategy: stored.strategy ?? null,
       warning: stored.warning ?? null,
       generated: stored.generated ? { ...stored.generated, glbUrl: `/ai-raw.glb?t=${stamp}` } : null,
       score: stored.score,

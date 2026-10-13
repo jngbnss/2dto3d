@@ -77,7 +77,7 @@ export interface Comparison {
   colour: number;
 }
 
-export type Method = "silhouette" | "ai";
+export type Method = "silhouette" | "geometry" | "ai" | "hybrid";
 
 export interface GenerateResult {
   glbUrl: string;
@@ -87,6 +87,7 @@ export interface GenerateResult {
   resolution: number;
   /** Method that produced the mesh; `silhouette` when AI was asked for but failed. */
   method: Method;
+  strategy: string | null;
   /** Why the requested method was not used, if it was not. */
   warning: string | null;
   /** `ai` only: the generated shape fitted to the views, before silhouette correction. */

@@ -8,6 +8,7 @@ import { boxMesh, demoMesh, mergeMeshes } from "../src/mesh/primitives.ts";
 import { parseGlb } from "../src/mesh/index.ts";
 import { reconstructFromViews, renderToDirectory } from "../src/pipeline.ts";
 import { colourDistance } from "../src/reconstruct/finish.ts";
+import { ellipticCylinderMesh } from "../src/reconstruct/geometry-reconstruct.ts";
 import type { ViewPaths } from "../src/analyze/report.ts";
 
 const SIZE = 256;
@@ -123,6 +124,45 @@ test("a through-hole visible in opposite silhouettes stays open", async (t) => {
 
   assert.equal(front.data[centre], 0, "front-view hole centre must remain transparent");
   assert.ok((result.comparisons.find((view) => view.id === "front")?.iou ?? 0) > 0.96);
+});
+
+test("geometry reconstruction selects a multi-view verified cylinder", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "sixview-geometry-cylinder-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = ellipticCylinderMesh(0.45, 1.4, 0.35);
+  const paths = (await renderToDirectory(source, join(directory, "input"), { size: SIZE })).paths;
+
+  const result = await reconstructFromViews(paths, {}, {
+    outputDirectory: join(directory, "result"),
+    method: "geometry",
+    resolution: RESOLUTION,
+  });
+
+  assert.equal(result.method, "geometry", result.warning);
+  assert.equal(result.strategy, "elliptic-revolve");
+  assert.ok(result.score > 0.94, `geometry IoU ${result.score.toFixed(3)}`);
+});
+
+test("geometry reconstruction falls back for an unsupported asymmetric assembly", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "sixview-geometry-fallback-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = mergeMeshes([
+    boxMesh({ size: [0.7, 1.4, 0.7] }),
+    boxMesh({ size: [0.45, 0.28, 0.3], at: [0.52, 0.25, 0] }),
+  ]);
+  const paths = (await renderToDirectory(source, join(directory, "input"), { size: SIZE })).paths;
+
+  const result = await reconstructFromViews(paths, {}, {
+    outputDirectory: join(directory, "result"),
+    method: "geometry",
+    resolution: RESOLUTION,
+    smoothing: 0,
+  });
+
+  assert.equal(result.method, "silhouette");
+  assert.equal(result.strategy, "silhouette-fallback");
+  assert.match(result.warning ?? "", /실루엣/);
+  assert.ok(result.score > 0.96, `fallback IoU ${result.score.toFixed(3)}`);
 });
 
 test("the exported surface is closed: every edge is shared by exactly two triangles", async (t) => {

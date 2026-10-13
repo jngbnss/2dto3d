@@ -166,7 +166,7 @@ export function renderGenerate(state: State, ui: PanelUi, actions: PanelActions)
     ),
     kind(
       "자동차 · 제품 · 기계",
-      "실루엣 교집합을 그대로 씁니다. 손잡이·레버처럼 비대칭 부품을 보존하기 위해 좌우 대칭 prior는 자동 적용하지 않습니다.",
+      "실루엣과 기본 형상 후보를 모두 검증해 더 적합한 결과를 고릅니다. 손잡이·레버 같은 비대칭 부품을 위해 좌우 대칭 prior는 자동 적용하지 않습니다.",
       PRODUCT,
     ),
     h(
@@ -175,6 +175,8 @@ export function renderGenerate(state: State, ui: PanelUi, actions: PanelActions)
       h("summary", {}, "고급 설정"),
       h("div", { class: "muted small" }, "생성 방식"),
       method("ai", "AI 형상 + 실루엣 보정"),
+      method("hybrid", "하이브리드 자동 선택"),
+      method("geometry", "기본 형상 기반"),
       method("silhouette", "실루엣만"),
       h("label", { class: "field" }, h("span", {}, "해상도"), resolution),
       h("label", { class: "field" }, h("span", {}, "스무딩 반복 (실루엣만)"), smoothing),
@@ -221,9 +223,15 @@ type Preset = Pick<GenerateForm, "method" | "rounding" | "symmetry">;
  * Symmetry remains an explicit advanced option for known-symmetric subjects.
  */
 export const CHARACTER: Preset = { method: "ai", rounding: 1, symmetry: false };
-export const PRODUCT: Preset = { method: "silhouette", rounding: 0, symmetry: false };
+export const PRODUCT: Preset = { method: "hybrid", rounding: 0, symmetry: false };
 
 export function renderResult(result: GenerateResult, stamp: number): HTMLElement {
+  const methodLabel: Record<Method, string> = {
+    silhouette: "실루엣",
+    geometry: "기본 형상",
+    ai: "AI + 실루엣 보정",
+    hybrid: "하이브리드",
+  };
   const rows = result.comparisons.map((c) =>
     h(
       "div",
@@ -274,7 +282,8 @@ export function renderResult(result: GenerateResult, stamp: number): HTMLElement
     h(
       "div",
       { class: "result-summary" },
-      h("span", {}, "방식 ", h("strong", {}, result.method === "ai" ? "AI + 실루엣 보정" : "실루엣")),
+      h("span", {}, "방식 ", h("strong", {}, methodLabel[result.method])),
+      result.strategy ? h("span", {}, "선택 ", h("strong", {}, result.strategy)) : null,
       h("span", {}, "삼각형 ", h("strong", {}, result.triangles.toLocaleString("ko-KR"))),
       h("span", {}, "해상도 ", h("strong", {}, String(result.resolution))),
       h(

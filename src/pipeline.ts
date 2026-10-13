@@ -23,6 +23,7 @@ import { extractSurface, extractVoxels } from "./reconstruct/mesh-extract.ts";
 import { postprocessMesh } from "./reconstruct/mesh-postprocess.ts";
 import { paintFromViews, proportionScale, type PhotoConsistency } from "./reconstruct/finish.ts";
 import { correctToHull, fitToViews, type Fit } from "./reconstruct/ai-correct.ts";
+import { bestGeometryCandidate, scoreSilhouetteFit } from "./reconstruct/geometry-reconstruct.ts";
 import type { Silhouette } from "./analyze/silhouette.ts";
 import type { ViewTransforms } from "./orientation.ts";
 import type { AxisEstimate, ViewSetReport } from "./analyze/types.ts";
@@ -109,7 +110,7 @@ export async function writePrepared(set: PreparedSet, directory: string): Promis
  * - `ai`: an image-to-3D model supplies the shape (cheeks, nose, protruding
  *   parts), then the silhouettes correct it. Best for characters.
  */
-export type ReconstructMethod = "silhouette" | "ai";
+export type ReconstructMethod = "silhouette" | "geometry" | "ai" | "hybrid";
 
 export interface ReconstructOptions {
   readonly outputDirectory: string;
@@ -155,6 +156,8 @@ export interface ReconstructResult extends Evaluation {
   readonly resolution: number;
   /** Method that produced `mesh` — `silhouette` when `ai` was asked for but the generator failed. */
   readonly method: ReconstructMethod;
+  /** Concrete candidate selected by geometry/hybrid reconstruction. */
+  readonly strategy?: string;
   /** Why the requested method could not be used, if it could not. */
   readonly warning?: string;
   /** For `ai`: the generated shape fitted to the views, before silhouette correction. */
@@ -191,11 +194,24 @@ export async function reconstructFromViews(
   const rasters = new Map([...set.views].map(([id, view]) => [id, view.prepared] as const));
 
   let method: ReconstructMethod = options.method ?? "silhouette";
+  let strategy: string | undefined;
   let warning: string | undefined;
   let generated: ReconstructResult["generated"];
   let surface: Mesh | null = null;
   // The plain hull is the correction target for `ai` and the voxel export for both.
   const hull = buildHullField(silhouettes, frame, { resolution, symmetryX });
+  let silhouetteSurface: Mesh | null = null;
+  const getSilhouetteSurface = (): Mesh => {
+    if (silhouetteSurface) return silhouetteSurface;
+    const field = (options.rounding ?? 0) > 0
+      ? buildHullField(silhouettes, frame, { resolution, symmetryX, rounding: options.rounding ?? 0 })
+      : hull;
+    silhouetteSurface = postprocessMesh(extractSurface(field), {
+      iterations: options.smoothing ?? 12,
+      maxDisplacement: field.cell * 0.6,
+    });
+    return silhouetteSurface;
+  };
 
   if (method === "ai") {
     try {
@@ -212,12 +228,32 @@ export async function reconstructFromViews(
       options.onProgress?.(warning);
     }
   }
+  if (!surface && (method === "geometry" || method === "hybrid")) {
+    options.onProgress?.("기본 형상 후보 생성·다중 뷰 검증 중…");
+    const geometry = bestGeometryCandidate(silhouettes, frame);
+    const silhouette = getSilhouetteSurface();
+    const silhouetteFit = scoreSilhouetteFit(silhouette, silhouettes, frame.pixelsPerUnit);
+    const geometryTrusted = geometry !== null && geometry.minimumViewScore >= 0.9;
+    if (method === "geometry") {
+      if (geometryTrusted && geometry.score >= 0.92) {
+        surface = geometry.mesh;
+        strategy = geometry.kind;
+      } else {
+        method = "silhouette";
+        strategy = "silhouette-fallback";
+        surface = silhouette;
+        warning = "기본 형상 후보가 모든 뷰를 충분히 설명하지 못해 실루엣 방식으로 처리했습니다.";
+      }
+    } else if (geometryTrusted && geometry.score >= silhouetteFit.score - 0.01) {
+      surface = geometry.mesh;
+      strategy = geometry.kind;
+    } else {
+      surface = silhouette;
+      strategy = "silhouette";
+    }
+  }
   if (!surface) {
-    const field = (options.rounding ?? 0) > 0 ? buildHullField(silhouettes, frame, { resolution, symmetryX, rounding: options.rounding ?? 0 }) : hull;
-    surface = postprocessMesh(extractSurface(field), {
-      iterations: options.smoothing ?? 12,
-      maxDisplacement: field.cell * 0.6,
-    });
+    surface = getSilhouetteSurface();
   }
 
   const painted = paintFromViews(surface, set.views, rasters, set.pixelsPerUnit);
@@ -246,6 +282,7 @@ export async function reconstructFromViews(
     mesh,
     resolution,
     method,
+    ...(strategy ? { strategy } : {}),
     ...(warning ? { warning } : {}),
     ...(generated ? { generated } : {}),
     files,
