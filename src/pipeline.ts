@@ -27,7 +27,7 @@ import type { Silhouette } from "./analyze/silhouette.ts";
 import type { ViewTransforms } from "./orientation.ts";
 import type { AxisEstimate, ViewSetReport } from "./analyze/types.ts";
 import {
-  DEFAULT_PROVIDER,
+  aiProvider,
   resolveProvider,
   type GeneratedMesh,
   type SourceImage,
@@ -260,7 +260,7 @@ async function generateFitted(
   frame: { readonly pixelsPerUnit: number; readonly extent: Readonly<Record<Axis, number>> },
   options: ReconstructOptions,
 ): Promise<Fit> {
-  const provider = resolveProvider(options.provider ?? DEFAULT_PROVIDER);
+  const provider = resolveProvider(options.provider ?? (await aiProvider()));
   const images: Partial<Record<ViewId, SourceImage>> = Object.fromEntries(
     [...set.views].map(([id, view]) => [id, { bytes: new Uint8Array(view.png), mime: "image/png" }] as const),
   );
