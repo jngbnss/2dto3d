@@ -10,7 +10,11 @@ import { reconstructFromViews, renderToDirectory } from "../src/pipeline.ts";
 import { colourDistance } from "../src/reconstruct/finish.ts";
 import { ellipticCylinderMesh } from "../src/reconstruct/geometry-reconstruct.ts";
 import { adviseResolution } from "../src/reconstruct/detail-resolution.ts";
+import { extractManifoldSurface } from "../src/reconstruct/manifold-extract.ts";
+import { extractSurface } from "../src/reconstruct/mesh-extract.ts";
 import type { Silhouette } from "../src/analyze/silhouette.ts";
+import { inspectMesh } from "../src/quality.ts";
+import type { HullField } from "../src/reconstruct/voxel-reconstruct.ts";
 import type { ViewPaths } from "../src/analyze/report.ts";
 
 const SIZE = 256;
@@ -36,6 +40,29 @@ test("thin joint evidence raises voxel resolution one bounded tier", () => {
   assert.equal(advice.adjusted, true);
   assert.equal(advice.resolution, 96);
   assert.equal(advice.view, "front");
+});
+
+test("Manifold fallback resolves an ambiguous non-manifold level set", async () => {
+  const size = 6;
+  const values = new Float32Array(size ** 3).fill(-1);
+  for (const index of [49, 52, 55, 58, 64, 79, 82, 93, 116, 117, 118, 121, 122, 123, 124, 154, 157, 158, 160, 166]) {
+    values[index] = 1;
+  }
+  const field: HullField = {
+    nx: size,
+    ny: size,
+    nz: size,
+    origin: [0, 0, 0],
+    cell: 1,
+    values,
+    views: ["front"],
+  };
+
+  assert.ok(inspectMesh(extractSurface(field), 0).nonManifoldEdges > 0);
+  const repaired = inspectMesh(await extractManifoldSurface(field), 0);
+  assert.equal(repaired.boundaryEdges, 0);
+  assert.equal(repaired.nonManifoldEdges, 0);
+  assert.equal(repaired.degenerateTriangles, 0);
 });
 
 async function fixture(): Promise<{ directory: string; paths: ViewPaths }> {

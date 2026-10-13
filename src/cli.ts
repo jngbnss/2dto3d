@@ -181,9 +181,18 @@ async function main(argv: string[]): Promise<number> {
       await maybeWriteJson(values.json, {
         report: result.report,
         method: result.method,
+        strategy: result.strategy ?? null,
+        resolution: result.resolution,
+        requestedResolution: result.requestedResolution,
+        resolutionAdjusted: result.resolutionAdjusted,
+        detailView: result.detailView ?? null,
         comparisons: result.comparisons,
         score: result.score,
+        shapeScore: result.shapeScore,
+        textureScore: result.textureScore,
         colourScore: result.colourScore,
+        meshQuality: result.meshQuality,
+        triangles: result.mesh.indices.length / 3,
         ...(result.generated ? { generated: result.generated } : {}),
       });
       return result.report.verdict === "fail" ? 2 : 0;

@@ -14,7 +14,9 @@ export interface ResolutionAdvice {
 
 const MAX_ADAPTIVE_RESOLUTION = 384;
 const MIN_MEANINGFUL_PIXELS = 12;
-const MIN_MEANINGFUL_RATIO = 0.002;
+// Digital circles lose a few corner pixels under opening (~0.2% at 256 px).
+// Require a wider margin so curvature aliasing does not trigger a costly rebuild.
+const MIN_MEANINGFUL_RATIO = 0.005;
 
 /**
  * Detects silhouette-supported structures too thin for the requested voxel grid.

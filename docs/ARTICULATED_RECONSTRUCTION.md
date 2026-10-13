@@ -27,6 +27,7 @@
 | [RigAnything](https://github.com/Isabella98Liu/RigAnything) | 범용 auto-rigging | Adobe Research License, 비상업 연구 제한 | 제품 기본 기능에서 제외 |
 | [TRELLIS](https://github.com/microsoft/TRELLIS) | multi-image 3D 후보 | MIT, 로컬 권장 NVIDIA 16GB 이상/Linux | 원격 또는 충분한 GPU 환경의 hybrid 후보 |
 | [InstantMesh](https://github.com/TencentARC/InstantMesh) | single-image sparse-view mesh | Apache-2.0, CUDA 12.1/PyTorch 2.1 계열 | front 단일뷰 보조 후보. 5면 정합은 hull 검증 필수 |
+| [Manifold](https://github.com/elalish/manifold) | 강건한 level-set/boolean CAD 메시 | Apache-2.0, WebAssembly | Surface Nets가 비다양체 접합을 만들 때 자동 fallback으로 적용 |
 
 ## 다음 구현 경로
 

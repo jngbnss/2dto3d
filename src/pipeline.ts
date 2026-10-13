@@ -21,6 +21,7 @@ import { validate } from "./validation.ts";
 import { buildHullField, DEFAULT_RESOLUTION } from "./reconstruct/voxel-reconstruct.ts";
 import { adviseResolution } from "./reconstruct/detail-resolution.ts";
 import { extractSurface, extractVoxels } from "./reconstruct/mesh-extract.ts";
+import { extractManifoldSurface } from "./reconstruct/manifold-extract.ts";
 import { postprocessMesh } from "./reconstruct/mesh-postprocess.ts";
 import { paintFromViews, proportionScale, type PhotoConsistency } from "./reconstruct/finish.ts";
 import { correctToHull, fitToViews, type Fit } from "./reconstruct/ai-correct.ts";
@@ -226,15 +227,22 @@ export async function reconstructFromViews(
   let warning: string | undefined;
   let generated: ReconstructResult["generated"];
   let surface: Mesh | null = null;
+  let usedManifoldExtractor = false;
   // The plain hull is the correction target for `ai` and the voxel export for both.
   const hull = buildHullField(silhouettes, frame, { resolution, symmetryX });
   let silhouetteSurface: Mesh | null = null;
-  const getSilhouetteSurface = (): Mesh => {
+  const getSilhouetteSurface = async (): Promise<Mesh> => {
     if (silhouetteSurface) return silhouetteSurface;
     const field = (options.rounding ?? 0) > 0
       ? buildHullField(silhouettes, frame, { resolution, symmetryX, rounding: options.rounding ?? 0 })
       : hull;
-    silhouetteSurface = postprocessMesh(extractSurface(field), {
+    let extracted = extractSurface(field);
+    if (inspectMesh(extracted, 0).nonManifoldEdges > 0) {
+      options.onProgress?.("접합부 비다양체가 감지되어 Manifold level-set 추출기로 재생성합니다");
+      extracted = await extractManifoldSurface(field);
+      usedManifoldExtractor = true;
+    }
+    silhouetteSurface = postprocessMesh(extracted, {
       iterations: options.smoothing ?? 12,
       maxDisplacement: field.cell * 0.6,
     });
@@ -259,7 +267,7 @@ export async function reconstructFromViews(
   if (!surface && (method === "geometry" || method === "hybrid")) {
     options.onProgress?.("기본 형상 후보 생성·다중 뷰 검증 중…");
     const geometry = bestGeometryCandidate(silhouettes, frame);
-    const silhouette = getSilhouetteSurface();
+    const silhouette = await getSilhouetteSurface();
     const silhouetteFit = scoreSilhouetteFit(silhouette, silhouettes, frame.pixelsPerUnit);
     const geometryTrusted = geometry !== null && geometry.minimumViewScore >= 0.9;
     if (method === "geometry") {
@@ -289,7 +297,7 @@ export async function reconstructFromViews(
       generated = { ...evaluate(set, raw.mesh, raw.consistency), yaw: fitted.yaw, glb };
       const corrected = correctToHull(fitted.mesh, hull);
       const aiFit = scoreSilhouetteFit(corrected, silhouettes, frame.pixelsPerUnit);
-      const currentFit = scoreSilhouetteFit(surface ?? getSilhouetteSurface(), silhouettes, frame.pixelsPerUnit);
+      const currentFit = scoreSilhouetteFit(surface ?? await getSilhouetteSurface(), silhouettes, frame.pixelsPerUnit);
       if (aiFit.minimumViewScore >= 0.88 && aiFit.score >= currentFit.score - 0.03) {
         surface = corrected;
         strategy = "ai+silhouette";
@@ -300,8 +308,11 @@ export async function reconstructFromViews(
     }
   }
   if (!surface) {
-    surface = getSilhouetteSurface();
+    surface = await getSilhouetteSurface();
   }
+  if (usedManifoldExtractor) strategy = strategy === undefined || strategy === "silhouette"
+    ? "silhouette+manifold-levelset"
+    : `${strategy}+manifold-levelset`;
 
   const painted = paintFromViews(surface, set.views, rasters, set.pixelsPerUnit);
   const mesh = painted.mesh;
