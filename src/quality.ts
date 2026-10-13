@@ -135,6 +135,66 @@ export function inspectMesh(mesh: Mesh, pairBudget = 2_000_000): MeshQuality {
   };
 }
 
+/** Approximate bidirectional surface Chamfer distance, normalised by GT diagonal. */
+export function normalizedChamferDistance(reference: Mesh, candidate: Mesh, samples = 800): number {
+  const a = sampleSurface(reference, samples);
+  const b = sampleSurface(candidate, samples);
+  const nearest = (point: readonly [number, number, number], cloud: ReadonlyArray<readonly [number, number, number]>): number => {
+    let best = Infinity;
+    for (const other of cloud) best = Math.min(best, Math.hypot(point[0] - other[0], point[1] - other[1], point[2] - other[2]));
+    return best;
+  };
+  const forward = a.reduce((sum, point) => sum + nearest(point, b), 0) / Math.max(a.length, 1);
+  const backward = b.reduce((sum, point) => sum + nearest(point, a), 0) / Math.max(b.length, 1);
+  const diagonal = Math.hypot(
+    reference.bounds.max[0] - reference.bounds.min[0],
+    reference.bounds.max[1] - reference.bounds.min[1],
+    reference.bounds.max[2] - reference.bounds.min[2],
+  );
+  return ((forward + backward) / 2) / Math.max(diagonal, Number.EPSILON);
+}
+
+function sampleSurface(mesh: Mesh, count: number): Array<readonly [number, number, number]> {
+  const cumulative: number[] = [];
+  let total = 0;
+  for (let index = 0; index + 2 < mesh.indices.length; index += 3) {
+    const triangle = [mesh.indices[index] ?? 0, mesh.indices[index + 1] ?? 0, mesh.indices[index + 2] ?? 0] as const;
+    total += triangleArea2(mesh.positions, triangle) / 2;
+    cumulative.push(total);
+  }
+  if (!(total > 0)) return [];
+  const points: Array<readonly [number, number, number]> = [];
+  for (let sample = 0; sample < count; sample++) {
+    const target = ((sample + 0.5) / count) * total;
+    let low = 0;
+    let high = cumulative.length - 1;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if ((cumulative[middle] ?? total) < target) low = middle + 1;
+      else high = middle;
+    }
+    const base = low * 3;
+    const vertices = [mesh.indices[base] ?? 0, mesh.indices[base + 1] ?? 0, mesh.indices[base + 2] ?? 0] as const;
+    let u = fractional((sample + 1) * 0.7548776662466927);
+    let v = fractional((sample + 1) * 0.5698402909980532);
+    if (u + v > 1) {
+      u = 1 - u;
+      v = 1 - v;
+    }
+    const w = 1 - u - v;
+    points.push([0, 1, 2].map((axis) =>
+      (mesh.positions[vertices[0] * 3 + axis] ?? 0) * w +
+      (mesh.positions[vertices[1] * 3 + axis] ?? 0) * u +
+      (mesh.positions[vertices[2] * 3 + axis] ?? 0) * v,
+    ) as [number, number, number]);
+  }
+  return points;
+}
+
+function fractional(value: number): number {
+  return value - Math.floor(value);
+}
+
 function canonicalVertices(mesh: Mesh): Int32Array {
   const span = Math.max(
     mesh.bounds.max[0] - mesh.bounds.min[0],

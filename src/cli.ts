@@ -2,9 +2,11 @@
 import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { stat, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { VIEW_IDS } from "./views.ts";
 import { demoMesh } from "./mesh/primitives.ts";
+import { writeGlb } from "./mesh/index.ts";
+import { syntheticFixtures } from "./synthetic.ts";
 import { analyzeViewSet, formatReport, type ViewPaths } from "./analyze/report.ts";
 import { loadTransforms } from "./orientation.ts";
 import {
@@ -26,6 +28,7 @@ const USAGE = `sixview — front/back/left/right/top 5면 정투영 이미지로
                   silhouette: 실루엣 교집합 / geometry: 기본 형상 후보 / ai: AI 형상 / hybrid: 후보 자동 선택
                   → <out>/model.glb, model.obj, voxels.glb, result/*.png (ai는 ai-raw.glb도)
   sixview demo    [--out <dir>] [--size <px>]   샘플 형상을 5면으로 렌더 (테스트용 입력)
+  sixview synthetic [--out <dir>] [--size <px>] 구·원통·컵 손잡이·구멍 상자·비대칭 GT 세트 생성
   sixview render  <mesh.glb|obj> [--out <dir>] [--size <px>]
   sixview run     <dir> | --front a.png … [--provider <${Object.keys(PROVIDERS).join("|")}>] [--model <id>] [--out <dir>]
                   (선택) 생성형 모델로 3D 생성 → 입력 비율 보정·색 입히기
@@ -96,6 +99,17 @@ async function main(argv: string[]): Promise<number> {
       process.stdout.write(`${formatReport(report)}\n`);
       await maybeWriteJson(values.json, report);
       return report.verdict === "fail" ? 2 : 0;
+    }
+
+    case "synthetic": {
+      await mkdir(outDirectory, { recursive: true });
+      for (const [id, mesh] of Object.entries(syntheticFixtures())) {
+        const directory = resolve(outDirectory, id);
+        await renderToDirectory(mesh, directory, renderOptions);
+        await writeFile(resolve(directory, "truth.glb"), writeGlb(mesh));
+        process.stdout.write(`${id}: ${directory}\n`);
+      }
+      return 0;
     }
 
     case "render": {

@@ -140,6 +140,7 @@ AI 공급자별 라이선스·환경·GPU 요구사항은 `docs/AI_PROVIDERS.md`
 
 ```bash
 node src/cli.ts demo --out samples/demo     # 내장 형상을 5방향으로 정확히 렌더한 입력
+node src/cli.ts synthetic --out samples/synthetic # 5개 합성 GT 세트 + truth.glb
 node src/cli.ts build samples/demo --res 128
 node src/cli.ts serve --dir samples/demo    # 웹에서 회전·보정·생성 실험
 ```
