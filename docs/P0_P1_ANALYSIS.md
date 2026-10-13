@@ -7,7 +7,10 @@ Date: 2026-10-13
 Inspected preprocessing, alignment, canonical camera bases, silhouette extraction,
 visual-hull field construction, Surface Nets extraction, postprocessing, colour
 projection, result evaluation, AI provider adapters, web API, and Studio controls.
-Existing Stanley five-view set in `out-studio/` served as regression input.
+The five-view set then present in `out-studio/` served as regression input. A later
+visual audit showed the current files are a robot, not Stanley; the original Stanley
+images are no longer present, so the historical table below is not a reproducible
+Stanley comparison with the current workspace.
 
 ## Implemented pipeline
 
@@ -49,12 +52,13 @@ Pixel mapping matches across carving and rendering: `x_px = W/2 + dot(p,right)*p
 `y_px = H/2 - dot(p,up)*ppu`. New directional regression test checks all five views
 with a point offset in +X/+Y/+Z.
 
-## Stanley root cause and measurements
+## Historical stored-set root cause and measurements
 
 Stored result used product preset with X symmetry prior. Product preset silently enabled
 `symmetry=true`. Reconstruction then intersected every sample with its X-mirrored sample.
-Stanley handle is unilateral, so prior removed/recombined valid handle and body regions.
-Observed bilateral false geometry and narrow body follow directly from this operation.
+The subject was historically interpreted as having a unilateral handle, so the audit
+attributed the loss to symmetry. Because that exact source set is unavailable, this
+causal claim remains historical rather than a currently reproducible Stanley result.
 
 Same input, resolution 160:
 
