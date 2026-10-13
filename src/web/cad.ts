@@ -49,7 +49,14 @@ const GEOMETRY_CANDIDATES: ReadonlyArray<{
     id: "model-glb",
     format: "glb",
     label: "복원 메시 (model.glb)",
-    note: "5면 실루엣 교집합을 매끈한 표면으로 추출하고 뷰 색을 투영한 메시입니다.",
+    note: "5면 실루엣에 맞춘 최종 메시(실루엣 방식 또는 AI 형상 + 실루엣 보정)에 뷰 색을 투영했습니다.",
+  },
+  {
+    file: "ai-raw.glb",
+    id: "ai-raw",
+    format: "glb",
+    label: "AI 원본 (보정 전, ai-raw.glb)",
+    note: "AI가 만든 형상을 5면에 맞춰 놓기만 하고 실루엣 보정은 하지 않은 상태입니다.",
   },
   {
     file: "voxels.glb",

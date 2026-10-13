@@ -22,8 +22,9 @@ const USAGE = `sixview — front/back/left/right/top 5면 정투영 이미지로
 사용법
   sixview serve   [--dir <dir>] [--port <n>]   5면 업로드·방향/정렬 보정·검증·3D 생성 + /viewer
   sixview analyze <dir> | --front a.png … --top e.png [--json <file>]   정렬 품질만 검사
-  sixview build   <dir> | --front a.png … --top e.png [--out <dir>] [--res <n>] [--symmetry] [--rounding <0..1>] [--smoothing <n>]
-                  실루엣 교집합(visual hull) → 매끈한 메시 → <out>/model.glb, model.obj, voxels.glb, result/*.png
+  sixview build   <dir> | --front a.png … --top e.png [--out <dir>] [--method silhouette|ai] [--res <n>] [--symmetry] [--rounding <0..1>] [--smoothing <n>]
+                  silhouette: 실루엣 교집합 → 매끈한 메시 / ai: AI 형상(Hunyuan) → 5면 실루엣 보정
+                  → <out>/model.glb, model.obj, voxels.glb, result/*.png (ai는 ai-raw.glb도)
   sixview demo    [--out <dir>] [--size <px>]   샘플 형상을 5면으로 렌더 (테스트용 입력)
   sixview render  <mesh.glb|obj> [--out <dir>] [--size <px>]
   sixview run     <dir> | --front a.png … [--provider <${Object.keys(PROVIDERS).join("|")}>] [--model <id>] [--out <dir>]
@@ -34,6 +35,7 @@ const USAGE = `sixview — front/back/left/right/top 5면 정투영 이미지로
 옵션
   --out        결과 디렉터리 (기본 ./out, build는 기본 <dir>)
   --size       렌더 해상도, 정사각 픽셀 (기본 512)
+  --method     build 방식: silhouette(기본, 자동차·제품) | ai(캐릭터, 인터넷 필요)
   --res        복원 격자 해상도, 가장 긴 축 기준 (기본 160)
   --symmetry   좌우 대칭 prior (자동차 등)
   --rounding   곡면 보정 0~1: 수평 단면을 타원으로 깎아 대각선 모서리를 둥글게 (캐릭터 0.8~1, 자동차 0)
@@ -56,6 +58,7 @@ async function main(argv: string[]): Promise<number> {
       size: { type: "string" },
       res: { type: "string" },
       symmetry: { type: "boolean" },
+      method: { type: "string" },
       rounding: { type: "string" },
       smoothing: { type: "string" },
       provider: { type: "string" },
@@ -131,21 +134,37 @@ async function main(argv: string[]): Promise<number> {
         throw new Error("--res는 32~384 사이여야 합니다.");
       }
       const smoothing = values.smoothing === undefined ? undefined : Number.parseInt(values.smoothing, 10);
+      const method = values.method ?? "silhouette";
+      if (method !== "silhouette" && method !== "ai") throw new Error("--method는 silhouette 또는 ai입니다.");
       const result = await reconstructFromViews(paths, directory ? await loadTransforms(resolve(directory)) : {}, {
         outputDirectory: values.out ? outDirectory : resolve(directory ?? "out"),
+        method,
+        ...(values.provider ? { provider: values.provider } : {}),
         ...(resolution === undefined ? {} : { resolution }),
         ...(smoothing === undefined || !Number.isFinite(smoothing) ? {} : { smoothing }),
         symmetry: values.symmetry === true,
         rounding: values.rounding === undefined ? 0 : Math.min(1, Math.max(0, Number.parseFloat(values.rounding) || 0)),
+        onProgress: (message: string) => process.stderr.write(`· ${message}\n`),
       });
+      const scores = (label: string, e: { score: number; colourScore: number; comparisons: ReadonlyArray<{ id: string; iou: number; colour: number }> }): string =>
+        `  ${label} 외곽 ${(e.score * 100).toFixed(1)}% · 색 ${(e.colourScore * 100).toFixed(1)}% — ` +
+        e.comparisons.map((c) => `${c.id} ${(c.iou * 100).toFixed(0)}/${(c.colour * 100).toFixed(0)}`).join(" · ");
       process.stdout.write(
-        `${formatReport(result.report)}\n\n복원 결과 (해상도 ${result.resolution})\n` +
+        `${formatReport(result.report)}\n\n복원 결과 (${result.method}, 해상도 ${result.resolution})\n` +
+          (result.warning ? `  [경고] ${result.warning}\n` : "") +
           `  삼각형 ${(result.mesh.indices.length / 3).toLocaleString()}개\n` +
-          `  재투영 일치도 ${(result.score * 100).toFixed(1)}% — ${result.comparisons.map((c) => `${c.id} ${(c.iou * 100).toFixed(1)}%`).join(" · ")}\n` +
-          `  색 일치도 ${(result.colourScore * 100).toFixed(1)}% — ${result.comparisons.map((c) => `${c.id} ${(c.colour * 100).toFixed(1)}%`).join(" · ")}\n` +
+          (result.generated ? `${scores(`AI 원본(회전 ${result.generated.yaw}°)`, result.generated)}\n` : "") +
+          `${scores("결과", result)}\n` +
           `  ${result.files.glb}\n  ${result.files.obj}\n  ${result.files.voxels}\n  재렌더: ${result.files.renders}\n`,
       );
-      await maybeWriteJson(values.json, { report: result.report, comparisons: result.comparisons, score: result.score, colourScore: result.colourScore });
+      await maybeWriteJson(values.json, {
+        report: result.report,
+        method: result.method,
+        comparisons: result.comparisons,
+        score: result.score,
+        colourScore: result.colourScore,
+        ...(result.generated ? { generated: result.generated } : {}),
+      });
       return result.report.verdict === "fail" ? 2 : 0;
     }
 

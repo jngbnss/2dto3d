@@ -1,7 +1,7 @@
 import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
-import { VIEW_IDS, VIEWS, type ViewId } from "./views.ts";
+import { VIEW_IDS, VIEWS, type Axis, type ViewId } from "./views.ts";
 import {
   glbHasSurfaceColor,
   loadMesh,
@@ -21,10 +21,18 @@ import { maskIoU, validate } from "./validation.ts";
 import { buildHullField, DEFAULT_RESOLUTION } from "./reconstruct/voxel-reconstruct.ts";
 import { extractSurface, extractVoxels } from "./reconstruct/mesh-extract.ts";
 import { postprocessMesh } from "./reconstruct/mesh-postprocess.ts";
-import { paintFromViews, proportionScale } from "./reconstruct/finish.ts";
+import { paintFromViews, proportionScale, type PhotoConsistency } from "./reconstruct/finish.ts";
+import { correctToHull, fitToViews, type Fit } from "./reconstruct/ai-correct.ts";
+import type { Silhouette } from "./analyze/silhouette.ts";
 import type { ViewTransforms } from "./orientation.ts";
 import type { AxisEstimate, ViewSetReport } from "./analyze/types.ts";
-import { resolveProvider, type GeneratedMesh, type SourceImage, type ViewImages } from "./generate/index.ts";
+import {
+  DEFAULT_PROVIDER,
+  resolveProvider,
+  type GeneratedMesh,
+  type SourceImage,
+  type ViewImages,
+} from "./generate/index.ts";
 
 export interface RenderResult {
   readonly directory: string;
@@ -95,18 +103,30 @@ export async function writePrepared(set: PreparedSet, directory: string): Promis
   );
 }
 
+/**
+ * - `silhouette`: visual hull only — exact outlines, no inner relief. Best for
+ *   cars, products, machines.
+ * - `ai`: an image-to-3D model supplies the shape (cheeks, nose, protruding
+ *   parts), then the silhouettes correct it. Best for characters.
+ */
+export type ReconstructMethod = "silhouette" | "ai";
+
 export interface ReconstructOptions {
   readonly outputDirectory: string;
+  readonly method?: ReconstructMethod;
+  /** Image-to-3D provider for `method: "ai"`; defaults to the project default. */
+  readonly provider?: string;
   /** Grid cells along the longest axis. */
   readonly resolution?: number;
   /** Intersect with the X-mirrored hull (left-right symmetric subjects). */
   readonly symmetry?: boolean;
-  /** Rounded cross-section prior 0..1 (0 = plain hull, 1 = elliptical slices). */
+  /** Rounded cross-section prior 0..1 (0 = plain hull, 1 = elliptical slices). `silhouette` only. */
   readonly rounding?: number;
-  /** Taubin smoothing iterations, 0 = none. */
+  /** Taubin smoothing iterations, 0 = none. `silhouette` only. */
   readonly smoothing?: number;
   /** Proceed even when a required view is missing. */
   readonly allowMissing?: boolean;
+  readonly onProgress?: ((message: string) => void) | undefined;
 }
 
 export interface ViewComparison {
@@ -117,11 +137,7 @@ export interface ViewComparison {
   readonly colour: number;
 }
 
-export interface ReconstructResult {
-  readonly report: ViewSetReport;
-  readonly mesh: Mesh;
-  readonly resolution: number;
-  readonly files: { readonly glb: string; readonly obj: string; readonly voxels: string; readonly renders: string };
+export interface Evaluation {
   readonly comparisons: readonly ViewComparison[];
   /** Mean silhouette IoU of `comparisons`. */
   readonly score: number;
@@ -133,11 +149,25 @@ export interface ReconstructResult {
   readonly colourScore: number;
 }
 
+export interface ReconstructResult extends Evaluation {
+  readonly report: ViewSetReport;
+  readonly mesh: Mesh;
+  readonly resolution: number;
+  /** Method that produced `mesh` — `silhouette` when `ai` was asked for but the generator failed. */
+  readonly method: ReconstructMethod;
+  /** Why the requested method could not be used, if it could not. */
+  readonly warning?: string;
+  /** For `ai`: the generated shape fitted to the views, before silhouette correction. */
+  readonly generated?: Evaluation & { readonly yaw: number; readonly glb: string };
+  readonly files: { readonly glb: string; readonly obj: string; readonly voxels: string; readonly renders: string };
+}
+
 /**
  * Views -> validated, aligned silhouettes -> visual hull (signed distance field)
- * -> Surface Nets mesh -> clean-up and silhouette-bounded smoothing -> colour
- * projected from the views -> GLB / OBJ / voxel GLB -> re-rendered into every
- * view at the input's exact scale and compared.
+ * -> surface: either the hull itself (Surface Nets, clean-up, silhouette-bounded
+ * smoothing) or a generated shape fitted to the views and corrected onto the
+ * hull -> colour projected from the views -> GLB / OBJ / voxel GLB ->
+ * re-rendered into every view at the input's exact scale and compared.
  */
 export async function reconstructFromViews(
   paths: ViewPaths,
@@ -153,23 +183,46 @@ export async function reconstructFromViews(
 
   const resolution = options.resolution ?? DEFAULT_RESOLUTION;
   const silhouettes = new Map([...set.views].map(([id, view]) => [id, view.silhouette] as const));
-  const field = buildHullField(
-    silhouettes,
-    { pixelsPerUnit: set.pixelsPerUnit, extent: set.alignment.extent },
-    { resolution, symmetryX: options.symmetry ?? false, rounding: options.rounding ?? 0 },
-  );
-  const surface = postprocessMesh(extractSurface(field), {
-    iterations: options.smoothing ?? 12,
-    maxDisplacement: field.cell * 0.6,
-  });
-  const rasters = new Map([...set.views].map(([id, view]) => [id, view.prepared] as const));
-  const painted = paintFromViews(surface, set.views, rasters);
-  const mesh = painted.mesh;
-  const voxels = paintFromViews(extractVoxels(field), set.views, rasters).mesh;
-
+  const frame = { pixelsPerUnit: set.pixelsPerUnit, extent: set.alignment.extent };
+  const symmetryX = options.symmetry ?? false;
   const out = options.outputDirectory;
   await mkdir(out, { recursive: true });
   await writePrepared(set, out);
+  const rasters = new Map([...set.views].map(([id, view]) => [id, view.prepared] as const));
+
+  let method: ReconstructMethod = options.method ?? "silhouette";
+  let warning: string | undefined;
+  let generated: ReconstructResult["generated"];
+  let surface: Mesh | null = null;
+  // The plain hull is the correction target for `ai` and the voxel export for both.
+  const hull = buildHullField(silhouettes, frame, { resolution, symmetryX });
+
+  if (method === "ai") {
+    try {
+      const fitted = await generateFitted(set, silhouettes, frame, options);
+      const glb = join(out, "ai-raw.glb");
+      const raw = paintFromViews(fitted.mesh, set.views, rasters, set.pixelsPerUnit);
+      await writeFile(glb, writeGlb(raw.mesh));
+      generated = { ...evaluate(set, raw.mesh, raw.consistency), yaw: fitted.yaw, glb };
+      options.onProgress?.("실루엣 밖으로 나간 부분 보정 중…");
+      surface = correctToHull(fitted.mesh, hull);
+    } catch (error) {
+      method = "silhouette";
+      warning = `AI 형상 생성에 실패해 실루엣 방식으로 만들었습니다: ${error instanceof Error ? error.message : String(error)}`;
+      options.onProgress?.(warning);
+    }
+  }
+  if (!surface) {
+    const field = (options.rounding ?? 0) > 0 ? buildHullField(silhouettes, frame, { resolution, symmetryX, rounding: options.rounding ?? 0 }) : hull;
+    surface = postprocessMesh(extractSurface(field), {
+      iterations: options.smoothing ?? 12,
+      maxDisplacement: field.cell * 0.6,
+    });
+  }
+
+  const painted = paintFromViews(surface, set.views, rasters, set.pixelsPerUnit);
+  const mesh = painted.mesh;
+  const voxels = paintFromViews(extractVoxels(hull), set.views, rasters, set.pixelsPerUnit).mesh;
   const files = {
     glb: join(out, "model.glb"),
     obj: join(out, "model.obj"),
@@ -177,25 +230,60 @@ export async function reconstructFromViews(
     renders: join(out, "result"),
   };
   await writeFile(files.glb, writeGlb(mesh));
-  await writeFile(files.obj, toObj(mesh, `sixview visual hull · views=${field.views.join(",")} · resolution=${resolution}`), "utf8");
+  await writeFile(files.obj, toObj(mesh, `sixview ${method} · views=${hull.views.join(",")} · resolution=${resolution}`), "utf8");
   await writeFile(files.voxels, writeGlb(voxels));
 
   // Same scale and origin as the prepared silhouettes, so pixels line up for comparison.
   const size = [...set.views.values()][0]?.silhouette.width ?? 512;
-  const rendered = renderViews(mesh, { size, pixelsPerUnit: set.pixelsPerUnit });
-  await writeRenders(rendered, files.renders);
+  await writeRenders(renderViews(mesh, { size, pixelsPerUnit: set.pixelsPerUnit }), files.renders);
   await writeRenders(
     renderViews(markConflicts(mesh, painted.consistency.conflicts), { size, pixelsPerUnit: set.pixelsPerUnit }),
     files.renders,
     ".conflict",
   );
+  return {
+    report,
+    mesh,
+    resolution,
+    method,
+    ...(warning ? { warning } : {}),
+    ...(generated ? { generated } : {}),
+    files,
+    ...evaluate(set, mesh, painted.consistency),
+  };
+}
+
+/** The generated shape, turned and scaled into the views' frame. */
+async function generateFitted(
+  set: PreparedSet,
+  silhouettes: ReadonlyMap<ViewId, Silhouette>,
+  frame: { readonly pixelsPerUnit: number; readonly extent: Readonly<Record<Axis, number>> },
+  options: ReconstructOptions,
+): Promise<Fit> {
+  const provider = resolveProvider(options.provider ?? DEFAULT_PROVIDER);
+  const images: Partial<Record<ViewId, SourceImage>> = Object.fromEntries(
+    [...set.views].map(([id, view]) => [id, { bytes: new Uint8Array(view.png), mime: "image/png" }] as const),
+  );
+  if (!images.front) throw new Error("front 이미지가 필요합니다.");
+  const views: ViewImages = provider.multiImage ? { ...images, front: images.front } : { front: images.front };
+  options.onProgress?.(`${provider.label} 호출 중…`);
+  const result = await provider.generate({ views, onProgress: options.onProgress });
+  const authored = parseMesh(result.bytes, result.format);
+  options.onProgress?.("생성된 형상을 5면에 맞추는 중…");
+  return fitToViews(result.facing === "-z" ? turnAround(authored) : authored, silhouettes, frame);
+}
+
+/** Silhouette IoU per view against a render at the prepared scale, plus the paint's colour agreement. */
+function evaluate(set: PreparedSet, mesh: Mesh, consistency: PhotoConsistency): Evaluation {
+  const size = [...set.views.values()][0]?.silhouette.width ?? 512;
+  const rendered = renderViews(mesh, { size, pixelsPerUnit: set.pixelsPerUnit });
   const comparisons = [...set.views.values()].map((view) => ({
     id: view.id,
     iou: maskIoU(view.silhouette, rendered[view.id].pixels),
-    colour: painted.consistency.perView.get(view.id) ?? 1,
+    colour: consistency.perView.get(view.id) ?? 1,
   }));
   const score = comparisons.reduce((sum, c) => sum + c.iou, 0) / Math.max(comparisons.length, 1);
-  return { report, mesh, resolution, files, comparisons, score, colourScore: painted.consistency.score };
+  return { comparisons, score, colourScore: consistency.score };
 }
 
 /** The mesh in muted grey with every colour-conflict vertex in red, for the conflict renders. */

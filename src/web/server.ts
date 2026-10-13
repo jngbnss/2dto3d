@@ -6,7 +6,7 @@ import { VIEWS, VIEW_IDS, imageAxes, isViewId, type ViewId } from "../views.ts";
 import { loadTransforms, saveTransforms, updateTransform, type ViewTransform } from "../orientation.ts";
 import { prepareViewSet } from "../preprocess.ts";
 import { validate } from "../validation.ts";
-import { reconstructFromViews, viewPathsFromDirectory, writePrepared } from "../pipeline.ts";
+import { reconstructFromViews, viewPathsFromDirectory, writePrepared, type ReconstructMethod } from "../pipeline.ts";
 import type { ViewSetReport } from "../analyze/types.ts";
 import { handleCadRequest } from "./cad.ts";
 
@@ -34,9 +34,13 @@ const RESULT_FILE = "result.json";
 interface StoredResult {
   readonly triangles: number;
   readonly resolution: number;
+  readonly method: ReconstructMethod;
+  readonly warning?: string;
   readonly score: number;
   readonly colourScore: number;
   readonly comparisons: ReadonlyArray<{ readonly id: ViewId; readonly iou: number; readonly colour: number }>;
+  /** `ai` only: the generated shape fitted to the views, before silhouette correction. */
+  readonly generated?: { readonly score: number; readonly colourScore: number; readonly yaw: number };
 }
 
 /**
@@ -147,7 +151,12 @@ async function handle(request: IncomingMessage, response: ServerResponse, direct
       : join(directory, "result", `${id}.png`);
     return sendFile(response, file, "image/png");
   }
-  const download = { "/model.glb": "model/gltf-binary", "/voxels.glb": "model/gltf-binary", "/model.obj": "model/obj" }[path];
+  const download = {
+    "/model.glb": "model/gltf-binary",
+    "/voxels.glb": "model/gltf-binary",
+    "/ai-raw.glb": "model/gltf-binary",
+    "/model.obj": "model/obj",
+  }[path];
   if (download) return sendFile(response, join(directory, path.slice(1)), download, path.slice(1));
 
   notFound(response);
@@ -203,17 +212,25 @@ async function generate(directory: string, body: unknown): Promise<unknown> {
 
   const result = await reconstructFromViews(paths, await loadTransforms(directory), {
     outputDirectory: directory,
+    method: options["method"] === "ai" ? "ai" : "silhouette",
     ...(resolution === undefined ? {} : { resolution }),
     ...(smoothing === undefined ? {} : { smoothing }),
     symmetry: options["symmetry"] === true,
     rounding: typeof options["rounding"] === "number" ? Math.min(1, Math.max(0, options["rounding"])) : 0,
+    onProgress: (message) => process.stdout.write(`· ${message}\n`),
   });
+  if (result.method !== "ai") await rm(join(directory, "ai-raw.glb"), { force: true });
   const stored: StoredResult = {
     triangles: result.mesh.indices.length / 3,
     resolution: result.resolution,
+    method: result.method,
+    ...(result.warning ? { warning: result.warning } : {}),
     score: result.score,
     colourScore: result.colourScore,
     comparisons: result.comparisons,
+    ...(result.generated
+      ? { generated: { score: result.generated.score, colourScore: result.generated.colourScore, yaw: result.generated.yaw } }
+      : {}),
   };
   await writeFile(join(directory, RESULT_FILE), `${JSON.stringify(stored, null, 2)}\n`, "utf8");
   return state(directory);
@@ -267,6 +284,9 @@ async function state(directory: string): Promise<unknown> {
       voxelUrl: `/voxels.glb?t=${stamp}`,
       triangles: stored.triangles,
       resolution: stored.resolution,
+      method: stored.method ?? "silhouette",
+      warning: stored.warning ?? null,
+      generated: stored.generated ? { ...stored.generated, glbUrl: `/ai-raw.glb?t=${stamp}` } : null,
       score: stored.score,
       colourScore: stored.colourScore,
       comparisons: stored.comparisons.map((c) => ({

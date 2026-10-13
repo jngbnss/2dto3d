@@ -1,7 +1,8 @@
 import { bust, grade, h } from "./dom";
-import type { GenerateResult, Resolution, State, Validation, Verdict } from "./types";
+import type { GenerateResult, Method, Resolution, State, Validation, Verdict } from "./types";
 
 export interface GenerateForm {
+  method: Method;
   resolution: Resolution;
   symmetry: boolean;
   smoothing: number;
@@ -125,16 +126,29 @@ export function renderGenerate(state: State, ui: PanelUi, actions: PanelActions)
   });
 
   // Users pick what the object is; the reconstruction parameters follow from it.
-  const kind = (label: string, hint: string, preset: Pick<GenerateForm, "rounding" | "symmetry">): HTMLElement =>
+  const kind = (label: string, hint: string, preset: Preset): HTMLElement =>
     h(
       "label",
       { class: "field check", title: hint },
       h("input", {
         type: "radio",
         name: "kind",
-        checked: form.rounding === preset.rounding && form.symmetry === preset.symmetry,
+        checked: form.method === preset.method && form.rounding === preset.rounding && form.symmetry === preset.symmetry,
         disabled: ui.generating,
         onChange: () => actions.updateForm(preset),
+      }),
+      h("span", {}, label),
+    );
+  const method = (value: Method, label: string): HTMLElement =>
+    h(
+      "label",
+      { class: "field check" },
+      h("input", {
+        type: "radio",
+        name: "method",
+        checked: form.method === value,
+        disabled: ui.generating,
+        onChange: () => actions.updateForm({ method: value }),
       }),
       h("span", {}, label),
     );
@@ -145,18 +159,25 @@ export function renderGenerate(state: State, ui: PanelUi, actions: PanelActions)
     h("h2", {}, "3D 생성"),
     blockers,
     h("div", { class: "muted" }, "물체 종류"),
-    kind("캐릭터 · 인형 · 생물 (둥글게)", "단면을 타원으로 깎아 대각선 모서리를 둥글게 만듭니다.", CHARACTER),
-    kind("자동차 · 제품 · 기계 (각지게)", "실루엣 교집합을 그대로 쓰고, 좌우 대칭으로 다듬습니다.", PRODUCT),
+    kind(
+      "캐릭터 · 인형 · 생물",
+      "AI(Hunyuan3D)가 볼·코·튀어나온 부품까지 형상을 만들고, 5면 실루엣이 크기와 외곽을 맞춥니다. 인터넷이 필요하고 30초~1분 걸립니다.",
+      CHARACTER,
+    ),
+    kind("자동차 · 제품 · 기계", "실루엣 교집합을 그대로 쓰고 좌우 대칭으로 다듬습니다. 몇 초면 끝납니다.", PRODUCT),
     h(
       "details",
       {},
       h("summary", {}, "고급 설정"),
+      h("div", { class: "muted small" }, "생성 방식"),
+      method("ai", "AI 형상 + 실루엣 보정"),
+      method("silhouette", "실루엣만"),
       h("label", { class: "field" }, h("span", {}, "해상도"), resolution),
-      h("label", { class: "field" }, h("span", {}, "스무딩 반복"), smoothing),
+      h("label", { class: "field" }, h("span", {}, "스무딩 반복 (실루엣만)"), smoothing),
       h(
         "label",
-        { class: "field", title: "0 = 실루엣 교집합 그대로, 1 = 단면을 타원으로." },
-        h("span", {}, "곡면 보정"),
+        { class: "field", title: "0 = 실루엣 교집합 그대로, 1 = 단면을 타원으로. 실루엣만 방식에 적용됩니다." },
+        h("span", {}, "곡면 보정 (실루엣만)"),
         rounding,
         roundingValue,
       ),
@@ -181,17 +202,20 @@ export function renderGenerate(state: State, ui: PanelUi, actions: PanelActions)
         onClick: () => actions.generate(),
       },
       ui.generating ? h("span", { class: "spinner" }) : null,
-      ui.generating ? "생성 중…" : "3D 생성",
+      ui.generating ? (form.method === "ai" ? "AI 형상 생성 중… (30초~1분)" : "생성 중…") : "3D 생성",
     ),
   );
 }
 
+type Preset = Pick<GenerateForm, "method" | "rounding" | "symmetry">;
+
 /**
- * Characters: round slices, no mirror prior (asymmetric parts such as a hair
- * flower would be cut off by it). Products: plain hull, mirrored.
+ * Characters: generated shape corrected by the silhouettes, no mirror prior
+ * (asymmetric parts such as a hair flower would be cut off by it); rounding
+ * stays on for the silhouette fallback. Products: plain hull, mirrored.
  */
-export const CHARACTER = { rounding: 1, symmetry: false } as const;
-const PRODUCT = { rounding: 0, symmetry: true } as const;
+export const CHARACTER: Preset = { method: "ai", rounding: 1, symmetry: false };
+const PRODUCT: Preset = { method: "silhouette", rounding: 0, symmetry: true };
 
 export function renderResult(result: GenerateResult, stamp: number): HTMLElement {
   const rows = result.comparisons.map((c) =>
@@ -244,6 +268,7 @@ export function renderResult(result: GenerateResult, stamp: number): HTMLElement
     h(
       "div",
       { class: "result-summary" },
+      h("span", {}, "방식 ", h("strong", {}, result.method === "ai" ? "AI + 실루엣 보정" : "실루엣")),
       h("span", {}, "삼각형 ", h("strong", {}, result.triangles.toLocaleString("ko-KR"))),
       h("span", {}, "해상도 ", h("strong", {}, String(result.resolution))),
       h(
@@ -259,11 +284,23 @@ export function renderResult(result: GenerateResult, stamp: number): HTMLElement
         h("strong", { class: `tone-${grade(result.colourScore)}` }, String(Math.round(result.colourScore * 100))),
       ),
     ),
+    result.warning ? h("p", { class: "warn-note" }, result.warning) : null,
+    result.generated
+      ? h(
+          "p",
+          { class: "muted small" },
+          `AI 원본(보정 전): 외곽 ${Math.round(result.generated.score * 100)} · 색 ${Math.round(result.generated.colourScore * 100)}` +
+            ` → 보정 후: 외곽 ${Math.round(result.score * 100)} · 색 ${Math.round(result.colourScore * 100)}` +
+            (result.generated.yaw ? ` · AI 형상을 ${result.generated.yaw}° 돌려 맞춤` : ""),
+        )
+      : null,
     result.colourScore < 0.9
       ? h(
           "p",
           { class: "warn-note" },
-          "외곽선은 맞지만 사진들이 표면 색에 동의하지 않는 곳이 있습니다(빨강). 꽃·눈 같은 무늬가 여러 곳에 찍혔다면 형상 안쪽이 실제와 다릅니다 — 캐릭터는 'AI + 실루엣 보정' 방식을 쓰세요.",
+          result.method === "ai"
+            ? "사진들이 표면 색에 동의하지 않는 곳이 남아 있습니다(빨강). AI 형상의 무늬 위치가 사진과 조금 다를 때 생깁니다 — 더 정확한 정투영 사진이 가장 효과적입니다."
+            : "외곽선은 맞지만 사진들이 표면 색에 동의하지 않는 곳이 있습니다(빨강). 꽃·눈 같은 무늬가 여러 곳에 찍혔다면 형상 안쪽이 실제와 다릅니다 — 캐릭터는 'AI + 실루엣 보정' 방식을 쓰세요.",
         )
       : null,
     h(
@@ -273,6 +310,7 @@ export function renderResult(result: GenerateResult, stamp: number): HTMLElement
       h("a", { class: "btn-link", href: result.glbUrl, download: "" }, "GLB 내려받기"),
       h("a", { class: "btn-link", href: result.objUrl, download: "" }, "OBJ 내려받기"),
       h("a", { class: "btn-link", href: result.voxelUrl, download: "" }, "복셀 GLB"),
+      result.generated ? h("a", { class: "btn-link", href: result.generated.glbUrl, download: "" }, "AI 원본 GLB") : null,
     ),
     h(
       "p",

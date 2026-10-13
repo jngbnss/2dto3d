@@ -124,7 +124,7 @@ export function smoothWithinBand(mesh: Mesh, iterations: number, radius: number)
 }
 
 /** Unique vertex neighbours in CSR form. */
-function adjacency(mesh: Mesh, vertexCount: number): { offsets: Uint32Array; neighbours: Uint32Array } {
+export function adjacency(mesh: Mesh, vertexCount: number): { offsets: Uint32Array; neighbours: Uint32Array } {
   const sets: Array<Set<number>> = Array.from({ length: vertexCount }, () => new Set<number>());
   for (let t = 0; t + 2 < mesh.indices.length; t += 3) {
     const a = mesh.indices[t] ?? 0;

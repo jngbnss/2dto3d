@@ -77,7 +77,8 @@ flowchart LR
 | `src/mesh/glb.ts`, `obj.ts` | GLB(법선·정점색) / OBJ 내보내기 |
 | `src/pipeline.ts` | `reconstructFromViews`(메인), `runFromViews`(선택: 생성형 공급자) |
 | `src/web/server.ts` | studio JSON API, 파일 서빙, 작업 직렬화 |
-| `cad/src/studio/` | 5면 입력 화면: 방향 마커, 중심선·bbox·외곽선, 회전/반전/보정, 품질 점수, 재투영 비교(외곽 IoU + 색 일치도 + 색 충돌 렌더) |
+| `cad/src/studio/` | 5면 입력 화면: 방향 마커, 중심선·bbox·외곽선, 회전/반전/보정, 품질 점수, 생성 방식(물체 종류), 재투영 비교(외곽 IoU + 색 일치도 + 색 충돌 렌더, AI 보정 전/후) |
+| `src/reconstruct/ai-correct.ts` | AI 형상을 5면 프레임에 맞추기(4방향 회전 선택, 축별 크기·위치), hull 밖 부분의 부드러운 보정 |
 | `cad/src/viewer/` | 3D 뷰어: orbit, wireframe, flat/smooth, mesh↔voxel, bbox, XYZ gizmo, front/back/left/right/top 프리셋, 바닥 방향 표시 |
 
 ## 정렬 검증
@@ -103,6 +104,17 @@ flowchart LR
 - **색 일치도 (photo-consistency):** 두 장 이상의 사진이 함께 정면으로 보는 표면점마다, 사진들이 그 점의 색에 동의하는지 본다. 밝기 차이(같은 흰 면의 음영)는 절반만 반영하고, 색상 차이(흰 얼굴 vs 분홍 꽃)는 그대로 반영한다(`colourDistance`). 동의하지 않는 점은 `result/<view>.conflict.png`에 빨갛게 표시된다.
 
 외곽 일치도가 높은데 색 일치도가 낮으면, 외곽선은 맞지만 형상 안쪽이 실제와 다르다는 뜻이다. 예: 키티의 꽃이 앞면·옆면·정수리에 따로 찍힘(외곽 96%, 색 78%). 정확한 형상(내장 데모 의자)은 둘 다 98~100%다.
+
+## 생성 방식: 실루엣 vs AI + 실루엣 보정
+
+| 방식 | 언제 | 무엇을 하나 |
+|---|---|---|
+| `silhouette` (웹: 자동차·제품) | 외곽선이 곧 형상인 물체 | 위의 hull 거리장 → Surface Nets → 스무딩. 몇 초, 오프라인 |
+| `ai` (웹: 캐릭터, 기본) | 볼·코·튀어나온 부품처럼 외곽선 안쪽에 형상이 있는 물체 | 정렬된 front/back/left/right를 Hunyuan3D-2mv에 보내 형상을 받고 → `fitToViews`: 4방향 회전 중 실루엣이 가장 잘 맞는 방향 선택, 축별 크기·위치를 열림 연산(수염 같은 가는 부분 제외)한 외곽선 폭에 맞춤 → `correctToHull`: 5면 hull 밖으로 2.5셀 넘게 나간 부분의 변위를 표면 전체로 확산시켜 부드럽게 밀어 넣음(평평한 단면 없이) → 뷰 색 투영 |
+
+`ai`는 인터넷과 HF Space가 필요하며 30초~1분 걸린다. 실패하면 자동으로 `silhouette`로 만들고 경고를 남긴다. 보정 전 형상은 `ai-raw.glb`로 함께 저장되어, 결과 화면과 뷰어에서 보정 전/후를 비교할 수 있다.
+
+키티 샘플(5면, 160): 실루엣 외곽 96 · 색 78 → AI 원본 외곽 91 · 색 82 → 보정 후 외곽 92 · 색 81. 외곽은 실루엣 방식이 가장 정확하고, 볼·코·꽃 같은 입체는 AI 방식만 만든다.
 
 ## 왜 이전보다 깔끔한가
 

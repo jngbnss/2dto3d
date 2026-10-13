@@ -107,7 +107,7 @@ interface Runs {
 }
 
 /** Thin parts (whiskers, antennae, wires) narrower than twice this are left out of cross-section spans. */
-const OPENING_RADIUS = 4;
+export const OPENING_RADIUS = 4;
 /** Rows above and below averaged when measuring a cross-section span. */
 const SPAN_ROWS = 3;
 
@@ -116,7 +116,7 @@ const SPAN_ROWS = 3;
  * and keeps everything else unchanged. Without it, a whisker row would widen the
  * head's span in that row only, and the rounded prior would bulge row by row.
  */
-function open(silhouette: Silhouette, radius: number): Uint8Array {
+export function openMask(silhouette: Pick<Silhouette, "width" | "height" | "mask">, radius: number): Uint8Array {
   const { width, height, mask } = silhouette;
   const toBackground = distanceTransform(mask, width, height, 0);
   const eroded = new Uint8Array(mask.length);
@@ -129,7 +129,7 @@ function open(silhouette: Silhouette, radius: number): Uint8Array {
 
 function rowRuns(silhouette: Silhouette): Runs {
   const { width, height } = silhouette;
-  const mask = open(silhouette, OPENING_RADIUS);
+  const mask = openMask(silhouette, OPENING_RADIUS);
   const start = new Int32Array(width * height).fill(-1);
   const end = new Int32Array(width * height).fill(-1);
   for (let y = 0; y < height; y++) {

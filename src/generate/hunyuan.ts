@@ -12,8 +12,11 @@ const DEFAULT_SEED = 1234;
 /** Turbo checkpoint: the Space's own default; 5 steps is its "Turbo" mode. */
 const DEFAULT_STEPS = 5;
 const DEFAULT_GUIDANCE = 5;
-/** Space slider 16–512; 384 is its "High" decode mode. */
-const DEFAULT_OCTREE_RESOLUTION = 384;
+/**
+ * Space slider 16–512; 256 is its "Standard" decode. "High" (384) returns ~2M
+ * triangles, far past what the silhouette correction and the web viewer need.
+ */
+const DEFAULT_OCTREE_RESOLUTION = 256;
 const DEFAULT_CHUNKS = 8000;
 
 /**

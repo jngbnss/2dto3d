@@ -78,8 +78,11 @@ export function paintFromViews(
   input: Mesh,
   samples: ReadonlyMap<ViewId, ViewSample>,
   colour: ReadonlyMap<ViewId, Raster>,
+  pixelsPerUnit?: number,
 ): PaintResult {
-  const mesh = center(input);
+  // With the frame's scale known the mesh is already in view coordinates;
+  // otherwise it is registered box-to-box and must be centred first.
+  const mesh = pixelsPerUnit === undefined ? center(input) : input;
   const vertexCount = mesh.positions.length / 3;
   const normals = vertexNormals(mesh);
   const views = new Map<ViewId, ViewSamples>();
@@ -87,7 +90,7 @@ export function paintFromViews(
     const raster = colour.get(id);
     const bbox = sample.silhouette.bbox;
     if (!raster || !bbox) continue;
-    const sampled = sampleView(mesh, normals, id, sample, raster, bbox);
+    const sampled = sampleView(mesh, normals, id, sample, raster, bbox, pixelsPerUnit);
     if (sampled) views.set(id, sampled);
   }
 
@@ -185,6 +188,7 @@ function sampleView(
   sample: ViewSample,
   raster: Raster,
   bbox: NonNullable<ViewSample["silhouette"]["bbox"]>,
+  pixelsPerUnit: number | undefined,
 ): ViewSamples | null {
   const basis = BASES[id];
   const vertexCount = mesh.positions.length / 3;
@@ -211,7 +215,8 @@ function sampleView(
   }
   if (!(uMax > uMin) || !(vMax > vMin)) return null;
 
-  // Mesh projection box -> silhouette box, both as 0..1 fractions of the frame.
+  // World -> 0..1 frame fractions: either the preprocessing contract (origin at
+  // the frame centre, fixed px/unit) or mesh projection box -> silhouette box.
   const silhouette = sample.silhouette;
   const fx0 = bbox.x0 / silhouette.width;
   const fx1 = bbox.x1 / silhouette.width;
@@ -220,8 +225,13 @@ function sampleView(
   const fx = new Float32Array(vertexCount);
   const fy = new Float32Array(vertexCount);
   for (let i = 0; i < vertexCount; i++) {
-    fx[i] = fx0 + (((u[i] ?? 0) - uMin) / (uMax - uMin)) * (fx1 - fx0);
-    fy[i] = fy0 + ((vMax - (v[i] ?? 0)) / (vMax - vMin)) * (fy1 - fy0);
+    if (pixelsPerUnit !== undefined) {
+      fx[i] = 0.5 + ((u[i] ?? 0) * pixelsPerUnit) / silhouette.width;
+      fy[i] = 0.5 - ((v[i] ?? 0) * pixelsPerUnit) / silhouette.height;
+    } else {
+      fx[i] = fx0 + (((u[i] ?? 0) - uMin) / (uMax - uMin)) * (fx1 - fx0);
+      fy[i] = fy0 + ((vMax - (v[i] ?? 0)) / (vMax - vMin)) * (fy1 - fy0);
+    }
   }
 
   const depth = depthBuffer(mesh, fx, fy, d);

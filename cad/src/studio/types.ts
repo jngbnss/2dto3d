@@ -77,12 +77,20 @@ export interface Comparison {
   colour: number;
 }
 
+export type Method = "silhouette" | "ai";
+
 export interface GenerateResult {
   glbUrl: string;
   objUrl: string;
   voxelUrl: string;
   triangles: number;
   resolution: number;
+  /** Method that produced the mesh; `silhouette` when AI was asked for but failed. */
+  method: Method;
+  /** Why the requested method was not used, if it was not. */
+  warning: string | null;
+  /** `ai` only: the generated shape fitted to the views, before silhouette correction. */
+  generated: { score: number; colourScore: number; yaw: number; glbUrl: string } | null;
   /** 0..1 mean reprojection IoU. */
   score: number;
   /** 0..1 photo-consistency: do the views agree on the surface's colour? */
@@ -102,9 +110,11 @@ export interface State {
 export type Resolution = 96 | 128 | 160 | 192 | 256;
 
 export interface GenerateOptions {
+  /** `ai`: generated shape corrected by the silhouettes (characters); `silhouette`: visual hull only. */
+  method?: Method;
   resolution?: Resolution;
   symmetry?: boolean;
   smoothing?: number;
-  /** Rounded cross-section prior, 0 (plain hull) .. 1 (elliptical slices). */
+  /** Rounded cross-section prior, 0 (plain hull) .. 1 (elliptical slices). Silhouette method only. */
   rounding?: number;
 }
