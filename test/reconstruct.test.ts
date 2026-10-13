@@ -205,6 +205,21 @@ test("views that agree on the surface score full colour agreement", async (t) =>
   assert.ok(result.colourScore > 0.95, `colour ${result.colourScore.toFixed(3)}`);
 });
 
+test("view-wide exposure differences are normalised before colour projection", async (t) => {
+  const { directory, paths } = await fixture();
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const left = paths.left;
+  assert.ok(left);
+  await writeFile(left, await sharp(await readFile(left)).modulate({ brightness: 0.65 }).png().toBuffer());
+
+  const result = await reconstructFromViews(paths, {}, { outputDirectory: directory, resolution: RESOLUTION });
+  const leftView = result.comparisons.find((comparison) => comparison.id === "left");
+
+  assert.ok(leftView);
+  assert.ok(leftView.colour > 0.9, `left colour ${leftView.colour.toFixed(3)}`);
+  assert.ok(result.colourScore > 0.94, `colour ${result.colourScore.toFixed(3)}`);
+});
+
 test("a view painted in different colours keeps its outline but loses colour agreement", async (t) => {
   const { directory, paths } = await fixture();
   t.after(() => rm(directory, { recursive: true, force: true }));

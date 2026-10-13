@@ -94,6 +94,7 @@ export function paintFromViews(
     const sampled = sampleView(mesh, normals, id, sample, raster, bbox, pixelsPerUnit);
     if (sampled) views.set(id, sampled);
   }
+  balanceExposure(views);
 
   // Where the photos disagree, blending them prints every photo's version of a
   // detail (three overlapping flowers). There, and in a small ring around it so
@@ -162,6 +163,51 @@ interface ViewSamples {
   readonly colour: Float32Array;
   /** How squarely the vertex faces this view where it was sampled, else 0. */
   readonly facing: Float32Array;
+}
+
+/**
+ * Removes view-wide illumination differences before projection. Only luminance
+ * changes; hue/chroma stay untouched so real logo conflicts remain detectable.
+ */
+function balanceExposure(views: ReadonlyMap<ViewId, ViewSamples>): void {
+  const medians = new Map<ViewId, number>();
+  for (const [id, view] of views) {
+    const luminance: number[] = [];
+    for (let vertex = 0; vertex < view.facing.length; vertex++) {
+      if ((view.facing[vertex] ?? 0) < CONSISTENCY_FACING) continue;
+      const r = view.colour[vertex * 3] ?? 0;
+      const g = view.colour[vertex * 3 + 1] ?? 0;
+      const b = view.colour[vertex * 3 + 2] ?? 0;
+      const y = 0.299 * r + 0.587 * g + 0.114 * b;
+      if (y > 0.03) luminance.push(y);
+    }
+    const value = median(luminance);
+    if (value !== null) medians.set(id, value);
+  }
+  const target = median([...medians.values()]);
+  if (target === null) return;
+  for (const [id, view] of views) {
+    const own = medians.get(id);
+    if (!own || own <= 0) continue;
+    // Avoid turning genuinely dark paint white. This corrects exposure, not art.
+    const gain = Math.min(1.35, Math.max(0.74, target / own));
+    for (let vertex = 0; vertex < view.facing.length; vertex++) {
+      if ((view.facing[vertex] ?? 0) <= 0) continue;
+      for (let channel = 0; channel < 3; channel++) {
+        const index = vertex * 3 + channel;
+        view.colour[index] = Math.min(1, (view.colour[index] ?? 0) * gain);
+      }
+    }
+  }
+}
+
+function median(values: readonly number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? (sorted[middle] ?? null)
+    : ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
 }
 
 function photoConsistency(views: ReadonlyMap<ViewId, ViewSamples>, vertexCount: number): PhotoConsistency {
