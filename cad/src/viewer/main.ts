@@ -88,9 +88,12 @@ const PRESETS: Record<string, readonly [number, number, number]> = {
   top: [0, 2.4, 0.001],
 };
 
+/** Height of the loaded model's centre above the ground; the orbit target and every preset aim at it. */
+let focusY = SIZE * 0.25;
+
 function frame(preset: readonly [number, number, number] = [1.3, 0.8, 1.9]): void {
-  camera.position.set(preset[0] * SIZE, preset[1] * SIZE, preset[2] * SIZE);
-  controls.target.set(0, SIZE * 0.15, 0);
+  camera.position.set(preset[0] * SIZE, focusY + (preset[1] - 0.25) * SIZE, preset[2] * SIZE);
+  controls.target.set(0, focusY, 0);
   controls.update();
 }
 
@@ -257,6 +260,7 @@ async function load(model: AiModelDescriptor): Promise<void> {
   root.scale.setScalar(scale);
   const centre = box.getCenter(new Vector3());
   root.position.set(-centre.x * scale, -box.min.y * scale, -centre.z * scale);
+  focusY = (size.y * scale) / 2;
   for (const previous of [...stage.children]) {
     stage.remove(previous);
     dispose(previous);
