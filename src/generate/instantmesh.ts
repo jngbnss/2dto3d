@@ -1,4 +1,4 @@
-import { GradioSpace, newSessionHash, type GradioFile } from "./gradio.ts";
+import { asGradioFile, GradioSpace, huggingFaceToken, newSessionHash, type GradioFile } from "./gradio.ts";
 import {
   downloadMesh,
   ProviderError,
@@ -20,6 +20,7 @@ const DEFAULT_SEED = 42;
  * poses (azimuth 30°…330°, alternating elevation) — they are NOT the six
  * orthographic faces. Carving them directly would be wrong, so this provider
  * takes the mesh from `make3d` and lets the local renderer produce exact faces.
+ * `make3d` delivers the subject facing -Z, so the result declares that facing.
  */
 export const instantMeshProvider: MeshProvider = {
   id: "instantmesh",
@@ -27,7 +28,7 @@ export const instantMeshProvider: MeshProvider = {
 
   async generate(request: GenerateRequest): Promise<GeneratedMesh> {
     const space = new GradioSpace(request.model ?? DEFAULT_SPACE, {
-      token: process.env["HF_TOKEN"],
+      token: huggingFaceToken(),
       signal: request.signal,
       onProgress: request.onProgress,
     });
@@ -38,17 +39,17 @@ export const instantMeshProvider: MeshProvider = {
 
     try {
       request.onProgress?.("이미지 업로드 중…");
-      const uploaded = await space.upload(request.image, "input.png", request.mime);
+      const uploaded = await space.upload(request.views.front.bytes, "input.png", request.views.front.mime);
 
       const [processed] = await space.call("preprocess", [uploaded, true], session);
-      const processedFile = asFile(processed);
+      const processedFile = asGradioFile(processed);
       if (!processedFile) throw new Error("배경 제거 결과를 받지 못했습니다.");
 
       const mvs = await space.call("generate_mvs", [processedFile, steps, seed], session);
-      const preview = mvs.map(asFile).find((file): file is GradioFile => file !== null);
+      const preview = mvs.map(asGradioFile).find((file): file is GradioFile => file !== null);
 
       const outputs = await space.call("make3d", [null], session);
-      const files = outputs.map(asFile).filter((file): file is GradioFile => file !== null);
+      const files = outputs.map(asGradioFile).filter((file): file is GradioFile => file !== null);
       const chosen = files.find((file) => extensionOf(file) !== null);
       if (!chosen) {
         throw new Error(`3D 결과 파일을 찾지 못했습니다: ${JSON.stringify(outputs).slice(0, 300)}`);
@@ -62,6 +63,7 @@ export const instantMeshProvider: MeshProvider = {
       return {
         bytes: await downloadMesh(url, request.signal),
         format,
+        facing: "-z",
         provider: "instantmesh",
         model: request.model ?? DEFAULT_SPACE,
         raw: {
@@ -80,13 +82,6 @@ export const instantMeshProvider: MeshProvider = {
 
 function numberOption(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function asFile(value: unknown): GradioFile | null {
-  if (!value || typeof value !== "object") return null;
-  const path = (value as { path?: unknown }).path;
-  if (typeof path !== "string") return null;
-  return value as GradioFile;
 }
 
 function extensionOf(file: GradioFile): MeshFormat | null {

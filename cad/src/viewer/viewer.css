@@ -1,0 +1,80 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+  color: #e6e9ef;
+  background: radial-gradient(ellipse at 50% 35%, #3a3f4b 0%, #1b1e25 70%);
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+.bar {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgb(15 17 21 / 70%);
+  backdrop-filter: blur(6px);
+}
+
+.bar select,
+.bar button {
+  font: inherit;
+  color: inherit;
+  background: #262b35;
+  border: 1px solid #3a4150;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.bar button[aria-pressed="true"] {
+  border-color: #6aa1ff;
+}
+
+.bar a {
+  color: #9cc0ff;
+  text-decoration: none;
+}
+
+.bar a:first-of-type {
+  margin-left: auto;
+}
+
+.status,
+.hint {
+  position: fixed;
+  left: 12px;
+  margin: 0;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgb(15 17 21 / 60%);
+}
+
+.status {
+  bottom: 44px;
+}
+
+.status--error {
+  color: #ff8f8f;
+}
+
+.hint {
+  bottom: 12px;
+  color: #a7afbd;
+}

@@ -48,8 +48,8 @@ export const falProvider: MeshProvider = {
       method: "POST",
       headers,
       body: JSON.stringify({
-        input_image_url: dataUri(request.image, request.mime),
-        image_url: dataUri(request.image, request.mime),
+        input_image_url: dataUri(request.views.front.bytes, request.views.front.mime),
+        image_url: dataUri(request.views.front.bytes, request.views.front.mime),
         ...request.options,
       }),
       ...(request.signal ? { signal: request.signal } : {}),

@@ -52,3 +52,29 @@ export function parseObj(bytes: Uint8Array): Mesh {
     bounds: computeBounds(positionArray),
   };
 }
+
+/** Wavefront OBJ with per-vertex colours, the form most viewers accept. */
+export function toObj(mesh: Mesh, comment: string): string {
+  const lines: string[] = [`# ${comment}`];
+  const hasColor = mesh.colors.length === mesh.positions.length;
+
+  for (let i = 0; i + 2 < mesh.positions.length; i += 3) {
+    const x = (mesh.positions[i] ?? 0).toFixed(5);
+    const y = (mesh.positions[i + 1] ?? 0).toFixed(5);
+    const z = (mesh.positions[i + 2] ?? 0).toFixed(5);
+    if (hasColor) {
+      const r = (mesh.colors[i] ?? 1).toFixed(4);
+      const g = (mesh.colors[i + 1] ?? 1).toFixed(4);
+      const b = (mesh.colors[i + 2] ?? 1).toFixed(4);
+      lines.push(`v ${x} ${y} ${z} ${r} ${g} ${b}`);
+    } else {
+      lines.push(`v ${x} ${y} ${z}`);
+    }
+  }
+  for (let i = 0; i + 2 < mesh.indices.length; i += 3) {
+    lines.push(
+      `f ${(mesh.indices[i] ?? 0) + 1} ${(mesh.indices[i + 1] ?? 0) + 1} ${(mesh.indices[i + 2] ?? 0) + 1}`,
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}

@@ -1,9 +1,10 @@
-import { computeBounds, type Mesh } from "./types.ts";
+import { computeBounds, vertexNormals, type Mesh } from "./types.ts";
 
 /**
- * Minimal glTF 2.0 / GLB reader: triangle geometry, vertex colours, and node
- * transforms. Materials, textures, skins, and animation are ignored because the
- * six-view analysis only consumes silhouettes and flat vertex colour.
+ * Minimal glTF 2.0 / GLB reader and writer. Reading keeps triangle geometry,
+ * vertex colours, and node transforms; materials, textures, skins, and animation
+ * are ignored because the analysis only consumes silhouettes and flat colour.
+ * Writing emits one vertex-coloured, smooth-shaded mesh.
  */
 
 const MAGIC_GLTF = 0x46546c67;
@@ -50,6 +51,7 @@ interface GltfJson {
   }>;
   bufferViews?: Array<{ buffer: number; byteOffset?: number; byteLength: number; byteStride?: number }>;
   buffers?: Array<{ byteLength: number; uri?: string }>;
+  images?: unknown[];
 }
 
 type Mat4 = Float64Array;
@@ -87,6 +89,140 @@ function splitChunks(bytes: Uint8Array, view: DataView): { json: GltfJson; bin: 
   }
   if (!json) throw new Error("GLB에 JSON 청크가 없습니다.");
   return { json, bin };
+}
+
+/** True when the asset carries its own colour: a texture image or per-vertex `COLOR_0`. */
+export function glbHasSurfaceColor(bytes: Uint8Array): boolean {
+  const json = readJson(bytes);
+  if ((json.images?.length ?? 0) > 0) return true;
+  return (json.meshes ?? []).some((mesh) =>
+    mesh.primitives.some((primitive) => primitive.attributes["COLOR_0"] !== undefined),
+  );
+}
+
+/**
+ * Re-parents the default scene under one node carrying `transform`. Geometry,
+ * UVs, and textures stay byte-for-byte untouched; every glTF consumer (three.js,
+ * Blender, `parseGlb`) applies the node transform.
+ */
+export function wrapGlbRoot(
+  bytes: Uint8Array,
+  transform: { readonly rotation?: readonly number[]; readonly scale?: readonly number[] },
+): Uint8Array {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.byteLength < 4 || view.getUint32(0, true) !== MAGIC_GLTF) {
+    throw new Error("GLB 바이너리만 변환할 수 있습니다.");
+  }
+  const { json, bin } = splitChunks(bytes, view);
+  const nodes = json.nodes ?? [];
+  const sceneIndex = json.scene ?? 0;
+  const scenes = json.scenes ?? [{ nodes: nodes.map((_, i) => i) }];
+  const scene = scenes[sceneIndex] ?? { nodes: [] };
+  nodes.push({
+    children: scene.nodes ?? [],
+    ...(transform.rotation ? { rotation: [...transform.rotation] } : {}),
+    ...(transform.scale ? { scale: [...transform.scale] } : {}),
+  });
+  scenes[sceneIndex] = { ...scene, nodes: [nodes.length - 1] };
+  return encodeGlb({ ...json, nodes, scenes, scene: sceneIndex }, bin);
+}
+
+/**
+ * Writes `mesh` as a single-primitive GLB with smooth vertex normals and, when
+ * present, per-vertex colour. The material is a plain dielectric so the colour
+ * reads as painted surface rather than metal.
+ */
+export function writeGlb(mesh: Mesh): Uint8Array {
+  const vertexCount = mesh.positions.length / 3;
+  const normals = vertexNormals(mesh);
+  const hasColor = mesh.colors.length === mesh.positions.length;
+  // `Mesh.colors` holds display (sRGB) values; glTF COLOR_0 is linear.
+  const linear = hasColor ? mesh.colors.map(srgbToLinear) : null;
+
+  const parts: Uint8Array[] = [
+    new Uint8Array(mesh.positions.buffer, mesh.positions.byteOffset, mesh.positions.byteLength),
+    new Uint8Array(normals.buffer),
+    ...(linear ? [new Uint8Array(linear.buffer)] : []),
+    new Uint8Array(mesh.indices.buffer, mesh.indices.byteOffset, mesh.indices.byteLength),
+  ];
+  const bufferViews: NonNullable<GltfJson["bufferViews"]> = [];
+  let offset = 0;
+  for (const part of parts) {
+    bufferViews.push({ buffer: 0, byteOffset: offset, byteLength: part.byteLength });
+    offset += part.byteLength; // every part is 4-byte aligned (float32 / uint32)
+  }
+  const bin = new Uint8Array(offset);
+  offset = 0;
+  for (const part of parts) {
+    bin.set(part, offset);
+    offset += part.byteLength;
+  }
+
+  const indexView = parts.length - 1;
+  const accessors: NonNullable<GltfJson["accessors"]> & Array<{ min?: number[]; max?: number[] }> = [
+    {
+      bufferView: 0,
+      componentType: 5126,
+      count: vertexCount,
+      type: "VEC3",
+      min: [...mesh.bounds.min],
+      max: [...mesh.bounds.max],
+    },
+    { bufferView: 1, componentType: 5126, count: vertexCount, type: "VEC3" },
+    ...(hasColor ? [{ bufferView: 2, componentType: 5126, count: vertexCount, type: "VEC3" }] : []),
+    { bufferView: indexView, componentType: 5125, count: mesh.indices.length, type: "SCALAR" },
+  ];
+  const attributes: Record<string, number> = { POSITION: 0, NORMAL: 1, ...(hasColor ? { COLOR_0: 2 } : {}) };
+
+  const json = {
+    asset: { version: "2.0", generator: "sixview" },
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [{ mesh: 0 }],
+    meshes: [{ primitives: [{ attributes, indices: accessors.length - 1, material: 0, mode: MODE_TRIANGLES }] }],
+    materials: [{ pbrMetallicRoughness: { metallicFactor: 0, roughnessFactor: 0.7 }, doubleSided: true }],
+    accessors,
+    bufferViews,
+    buffers: [{ byteLength: bin.byteLength }],
+  };
+  return encodeGlb(json, bin);
+}
+
+function readJson(bytes: Uint8Array): GltfJson {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.byteLength >= 4 && view.getUint32(0, true) === MAGIC_GLTF) return splitChunks(bytes, view).json;
+  return JSON.parse(new TextDecoder().decode(bytes)) as GltfJson;
+}
+
+function srgbToLinear(value: number): number {
+  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+}
+
+function linearToSrgb(value: number): number {
+  return value <= 0.0031308 ? value * 12.92 : 1.055 * value ** (1 / 2.4) - 0.055;
+}
+
+function encodeGlb(json: object, bin: Uint8Array | null): Uint8Array {
+  const encoded = new TextEncoder().encode(JSON.stringify(json));
+  const jsonLength = encoded.length + ((4 - (encoded.length % 4)) % 4);
+  const binLength = bin ? bin.length + ((4 - (bin.length % 4)) % 4) : 0;
+  const total = 12 + 8 + jsonLength + (bin ? 8 + binLength : 0);
+  const out = new Uint8Array(total);
+  const writer = new DataView(out.buffer);
+  writer.setUint32(0, MAGIC_GLTF, true);
+  writer.setUint32(4, 2, true);
+  writer.setUint32(8, total, true);
+  writer.setUint32(12, jsonLength, true);
+  writer.setUint32(16, CHUNK_JSON, true);
+  out.set(encoded, 20);
+  out.fill(0x20, 20 + encoded.length, 20 + jsonLength); // JSON chunk pads with spaces
+  if (bin) {
+    const at = 20 + jsonLength;
+    writer.setUint32(at, binLength, true);
+    writer.setUint32(at + 4, CHUNK_BIN, true);
+    out.set(bin, at + 8); // BIN chunk pads with zeros (already zero-filled)
+  }
+  return out;
 }
 
 function buildMesh(json: GltfJson, bin: Uint8Array | null): Mesh {
@@ -144,8 +280,13 @@ function buildMesh(json: GltfJson, bin: Uint8Array | null): Mesh {
           anyColor = true;
           const raw = readAccessor(json, buffers, colorAccessor);
           const stride = (json.accessors?.[colorAccessor]?.type ?? "VEC3") === "VEC4" ? 4 : 3;
+          // COLOR_0 is linear; `Mesh.colors` holds display (sRGB) values.
           for (let i = 0; i < vertexCount; i++) {
-            colors.push(raw[i * stride] ?? 1, raw[i * stride + 1] ?? 1, raw[i * stride + 2] ?? 1);
+            colors.push(
+              linearToSrgb(raw[i * stride] ?? 1),
+              linearToSrgb(raw[i * stride + 1] ?? 1),
+              linearToSrgb(raw[i * stride + 2] ?? 1),
+            );
           }
         } else {
           for (let i = 0; i < vertexCount; i++) colors.push(1, 1, 1);

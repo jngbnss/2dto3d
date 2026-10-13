@@ -1,36 +1,47 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { access, mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import sharp from "sharp";
-import { VIEW_IDS, type ViewId } from "./views.ts";
-import { loadMesh, parseMesh, type Mesh } from "./mesh/index.ts";
-import { renderSixViews, type RenderOptions } from "./render/ortho.ts";
-import { analyzeViewSet, loadViewSamples, type ViewPaths } from "./analyze/report.ts";
-import { carveVisualHull, type CarveOptions, type VoxelGrid } from "./reconstruct/carve.ts";
-import { surfaceMesh, toObj } from "./reconstruct/surface.ts";
-import type { SixViewReport } from "./analyze/types.ts";
-import { resolveProvider } from "./generate/index.ts";
+import { VIEW_IDS, VIEWS, type ViewId } from "./views.ts";
+import {
+  glbHasSurfaceColor,
+  loadMesh,
+  parseGlb,
+  parseMesh,
+  scaleMesh,
+  toObj,
+  turnAround,
+  wrapGlbRoot,
+  writeGlb,
+  type Mesh,
+} from "./mesh/index.ts";
+import { renderViews, type RenderedView, type RenderOptions } from "./render/ortho.ts";
+import { analyzeViewSet, type ViewPaths } from "./analyze/report.ts";
+import { outlinePng, prepareViewSet, type PreparedSet } from "./preprocess.ts";
+import { maskIoU, validate } from "./validation.ts";
+import { buildHullField, DEFAULT_RESOLUTION } from "./reconstruct/voxel-reconstruct.ts";
+import { extractSurface, extractVoxels } from "./reconstruct/mesh-extract.ts";
+import { postprocessMesh } from "./reconstruct/mesh-postprocess.ts";
+import { paintFromViews, proportionScale } from "./reconstruct/finish.ts";
+import type { ViewTransforms } from "./orientation.ts";
+import type { AxisEstimate, ViewSetReport } from "./analyze/types.ts";
+import { resolveProvider, type GeneratedMesh, type SourceImage, type ViewImages } from "./generate/index.ts";
 
 export interface RenderResult {
   readonly directory: string;
   readonly paths: ViewPaths;
 }
 
-const MIME_BY_EXTENSION: Record<string, string> = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
-};
-
 export async function renderToDirectory(
   mesh: Mesh,
   directory: string,
   options: RenderOptions = {},
 ): Promise<RenderResult> {
-  await mkdir(directory, { recursive: true });
-  const rendered = renderSixViews(mesh, options);
-  const paths: ViewPaths = {};
+  return writeRenders(renderViews(mesh, options), directory);
+}
 
+async function writeRenders(rendered: Readonly<Record<ViewId, RenderedView>>, directory: string): Promise<RenderResult> {
+  await mkdir(directory, { recursive: true });
+  const paths: ViewPaths = {};
   await Promise.all(
     VIEW_IDS.map(async (id) => {
       const view = rendered[id];
@@ -44,7 +55,6 @@ export async function renderToDirectory(
       paths[id] = path;
     }),
   );
-
   return { directory, paths };
 }
 
@@ -68,6 +78,101 @@ export async function viewPathsFromDirectory(directory: string): Promise<ViewPat
   return paths;
 }
 
+/** Writes each prepared canvas and its silhouette outline under `<directory>/prepared/`. */
+export async function writePrepared(set: PreparedSet, directory: string): Promise<void> {
+  const target = join(directory, "prepared");
+  await mkdir(target, { recursive: true });
+  await Promise.all(
+    [...set.views.values()].map(async (view) => {
+      await writeFile(join(target, `${view.id}.png`), view.png);
+      await writeFile(join(target, `${view.id}.outline.png`), await outlinePng(view.silhouette));
+    }),
+  );
+}
+
+export interface ReconstructOptions {
+  readonly outputDirectory: string;
+  /** Grid cells along the longest axis. */
+  readonly resolution?: number;
+  /** Intersect with the X-mirrored hull (left-right symmetric subjects). */
+  readonly symmetry?: boolean;
+  /** Rounded cross-section prior 0..1 (0 = plain hull, 1 = elliptical slices). */
+  readonly rounding?: number;
+  /** Taubin smoothing iterations, 0 = none. */
+  readonly smoothing?: number;
+  /** Proceed even when a required view is missing. */
+  readonly allowMissing?: boolean;
+}
+
+export interface ReconstructResult {
+  readonly report: ViewSetReport;
+  readonly mesh: Mesh;
+  readonly resolution: number;
+  readonly files: { readonly glb: string; readonly obj: string; readonly voxels: string; readonly renders: string };
+  /** Per view: IoU of the input silhouette against the result rendered back into that view. */
+  readonly comparisons: ReadonlyArray<{ readonly id: ViewId; readonly iou: number }>;
+  /** Mean of `comparisons`. */
+  readonly score: number;
+}
+
+/**
+ * Views -> validated, aligned silhouettes -> visual hull (signed distance field)
+ * -> Surface Nets mesh -> clean-up and silhouette-bounded smoothing -> colour
+ * projected from the views -> GLB / OBJ / voxel GLB -> re-rendered into every
+ * view at the input's exact scale and compared.
+ */
+export async function reconstructFromViews(
+  paths: ViewPaths,
+  transforms: ViewTransforms,
+  options: ReconstructOptions,
+): Promise<ReconstructResult> {
+  const set = await prepareViewSet(paths, transforms);
+  const report = validate(set);
+  const missingRequired = set.missing.filter((id) => VIEWS[id].required);
+  if (missingRequired.length > 0 && !options.allowMissing) {
+    throw new Error(`필수 뷰가 없습니다: ${missingRequired.join(", ")}. top 뷰 없이는 길이·폭·윗면 형상을 제한할 수 없습니다.`);
+  }
+
+  const resolution = options.resolution ?? DEFAULT_RESOLUTION;
+  const silhouettes = new Map([...set.views].map(([id, view]) => [id, view.silhouette] as const));
+  const field = buildHullField(
+    silhouettes,
+    { pixelsPerUnit: set.pixelsPerUnit, extent: set.alignment.extent },
+    { resolution, symmetryX: options.symmetry ?? false, rounding: options.rounding ?? 0 },
+  );
+  const surface = postprocessMesh(extractSurface(field), {
+    iterations: options.smoothing ?? 12,
+    maxDisplacement: field.cell * 0.6,
+  });
+  const rasters = new Map([...set.views].map(([id, view]) => [id, view.prepared] as const));
+  const mesh = paintFromViews(surface, set.views, rasters);
+  const voxels = paintFromViews(extractVoxels(field), set.views, rasters);
+
+  const out = options.outputDirectory;
+  await mkdir(out, { recursive: true });
+  await writePrepared(set, out);
+  const files = {
+    glb: join(out, "model.glb"),
+    obj: join(out, "model.obj"),
+    voxels: join(out, "voxels.glb"),
+    renders: join(out, "result"),
+  };
+  await writeFile(files.glb, writeGlb(mesh));
+  await writeFile(files.obj, toObj(mesh, `sixview visual hull · views=${field.views.join(",")} · resolution=${resolution}`), "utf8");
+  await writeFile(files.voxels, writeGlb(voxels));
+
+  // Same scale and origin as the prepared silhouettes, so pixels line up for comparison.
+  const size = [...set.views.values()][0]?.silhouette.width ?? 512;
+  const rendered = renderViews(mesh, { size, pixelsPerUnit: set.pixelsPerUnit });
+  await writeRenders(rendered, files.renders);
+  const comparisons = [...set.views.values()].map((view) => ({
+    id: view.id,
+    iou: maskIoU(view.silhouette, rendered[view.id].pixels),
+  }));
+  const score = comparisons.reduce((sum, c) => sum + c.iou, 0) / Math.max(comparisons.length, 1);
+  return { report, mesh, resolution, files, comparisons, score };
+}
+
 export interface RunOptions extends RenderOptions {
   readonly provider: string;
   readonly model?: string | undefined;
@@ -78,75 +183,83 @@ export interface RunOptions extends RenderOptions {
 
 export interface RunResult {
   readonly meshPath: string;
+  /** The input views, prepared and validated. */
+  readonly inputReport: ViewSetReport;
+  /** Views rendered from the finished asset, in `<outputDirectory>/result`. */
   readonly render: RenderResult;
-  readonly report: SixViewReport;
+  readonly report: ViewSetReport;
 }
 
-/** Single 2D image -> 3D asset (provider) -> six orthographic views -> analysis. */
-export async function runFromImage(imagePath: string, options: RunOptions): Promise<RunResult> {
+/**
+ * Generative alternative to `reconstructFromViews`: the prepared views go to an
+ * image-to-3D provider; its asset is rescaled to the views' proportions and, if
+ * untextured, coloured from them.
+ */
+export async function runFromViews(paths: ViewPaths, transforms: ViewTransforms, options: RunOptions): Promise<RunResult> {
   const provider = resolveProvider(options.provider);
-  const image = await readFile(imagePath);
-  const extension = imagePath.slice(imagePath.lastIndexOf(".")).toLowerCase();
+  const set = await prepareViewSet(paths, transforms);
+  const given = [...set.views.keys()];
+  if (!set.views.has("front")) throw new Error("front 이미지가 필요합니다.");
+  if (given.length > 1 && !provider.multiImage) {
+    throw new Error(`'${provider.id}' 공급자는 front 1장만 받습니다 (${given.length}장 입력).`);
+  }
+  const inputReport = validate(set);
 
-  options.onProgress?.(`${provider.label} 호출 중…`);
+  const images: Partial<Record<ViewId, SourceImage>> = Object.fromEntries(
+    [...set.views].map(([id, view]) => [id, { bytes: new Uint8Array(view.png), mime: "image/png" }] as const),
+  );
+  if (!images.front) throw new Error("front 이미지가 필요합니다.");
+  const views: ViewImages = { ...images, front: images.front };
+
+  options.onProgress?.(`${provider.label} 호출 중… (${given.join(", ")})`);
   const generated = await provider.generate({
-    image,
-    mime: MIME_BY_EXTENSION[extension] ?? "image/png",
+    views,
     model: options.model,
     signal: options.signal,
     onProgress: options.onProgress,
   });
 
+  options.onProgress?.("입력 비율로 맞추고 색 입히는 중…");
+  const bytes = finishAsset(generated, inputReport.axes, set);
   await mkdir(options.outputDirectory, { recursive: true });
-  const meshPath = join(options.outputDirectory, `mesh.${generated.format}`);
-  await writeFile(meshPath, generated.bytes);
+  const meshPath = join(options.outputDirectory, "model.glb");
+  await writeFile(meshPath, bytes);
   options.onProgress?.(`메시 저장: ${meshPath}`);
 
-  const mesh = parseMesh(generated.bytes, generated.format);
-  const render = await renderToDirectory(mesh, join(options.outputDirectory, "views"), options);
-  options.onProgress?.("6면 렌더 완료, 분석 시작");
+  const render = await renderToDirectory(parseGlb(bytes), join(options.outputDirectory, "result"), options);
+  return { meshPath, inputReport, render, report: await analyzeViewSet(render.paths) };
+}
 
-  return { meshPath, render, report: await analyzeViewSet(render.paths) };
+/**
+ * Turns the provider's asset into the delivered GLB: facing +Z, proportions of
+ * the input views, and colour. A textured GLB keeps its texture untouched under
+ * a root transform; anything else is rebuilt as a vertex-coloured mesh.
+ */
+function finishAsset(generated: GeneratedMesh, axes: readonly AxisEstimate[], set: PreparedSet): Uint8Array {
+  const turn = generated.facing === "-z";
+  if (generated.format === "glb" && glbHasSurfaceColor(generated.bytes)) {
+    // A 180° turn about Y keeps every axis extent, so bounds before turning suffice.
+    const scale = proportionScale(parseGlb(generated.bytes).bounds, axes);
+    return wrapGlbRoot(generated.bytes, { ...(turn ? { rotation: [0, 1, 0, 0] } : {}), scale });
+  }
+
+  const authored = parseMesh(generated.bytes, generated.format);
+  const facing = turn ? turnAround(authored) : authored;
+  let mesh = scaleMesh(facing, proportionScale(facing.bounds, axes));
+  if (mesh.colors.length === 0) {
+    mesh = paintFromViews(mesh, set.views, new Map([...set.views].map(([id, view]) => [id, view.prepared] as const)));
+  }
+  return writeGlb(mesh);
 }
 
 export async function renderAndAnalyze(
   meshPath: string,
   outputDirectory: string,
   options: RenderOptions = {},
-): Promise<{ render: RenderResult; report: SixViewReport }> {
+): Promise<{ render: RenderResult; report: ViewSetReport }> {
   const mesh = await loadMesh(meshPath);
   const render = await renderToDirectory(mesh, outputDirectory, options);
   return { render, report: await analyzeViewSet(render.paths) };
 }
 
-export interface CarveResult {
-  readonly objPath: string;
-  readonly grid: VoxelGrid;
-  readonly mesh: Mesh;
-  readonly report: SixViewReport;
-}
-
-/**
- * Six views -> solid. The report is produced from the same decoded views, so a
- * set that fails analysis can be rejected before anyone trusts the geometry.
- */
-export async function carveFromViews(
-  paths: ViewPaths,
-  objPath: string,
-  options: CarveOptions = {},
-): Promise<CarveResult> {
-  const { samples, missing } = await loadViewSamples(paths);
-  if (samples.size === 0) throw new Error("복원할 뷰가 없습니다.");
-
-  const report = await analyzeViewSet(paths);
-  const grid = carveVisualHull(samples, report.axes, options);
-  const mesh = surfaceMesh(grid);
-
-  await mkdir(dirname(resolve(objPath)), { recursive: true });
-  const header = `views=${grid.views.join(",")}${missing.length > 0 ? ` missing=${missing.join(",")}` : ""}`;
-  await writeFile(objPath, toObj(mesh, header), "utf8");
-
-  return { objPath, grid, mesh, report };
-}
-
-export type { ViewId, ViewPaths, SixViewReport };
+export type { ViewId, ViewPaths, ViewSetReport };

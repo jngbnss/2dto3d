@@ -19,6 +19,12 @@ export interface RenderOptions {
   readonly margin?: number;
   /** Base surface colour used when the mesh carries no vertex colours. */
   readonly albedo?: readonly [number, number, number];
+  /**
+   * Fixed pixels per world unit with the world origin at the frame centre — the
+   * preprocessing contract — so a render lines up pixel for pixel with the
+   * prepared input views. Without it the mesh is centred and fitted to the frame.
+   */
+  readonly pixelsPerUnit?: number;
 }
 
 const DEFAULT_SIZE = 512;
@@ -27,17 +33,17 @@ const DEFAULT_ALBEDO = [0.82, 0.84, 0.88] as const;
 const AMBIENT = 0.35;
 
 /**
- * Renders all six canonical views with one shared world-to-pixel scale.
+ * Renders every canonical view with one shared world-to-pixel scale.
  *
  * A per-view "fit to frame" would normalise away exactly the quantity the
  * analysis measures — the object's extent along each axis — so the scale is
  * computed once from the widest projection and reused by every view.
  */
-export function renderSixViews(input: Mesh, options: RenderOptions = {}): Record<ViewId, RenderedView> {
+export function renderViews(input: Mesh, options: RenderOptions = {}): Record<ViewId, RenderedView> {
   const size = options.size ?? DEFAULT_SIZE;
   const margin = options.margin ?? DEFAULT_MARGIN;
   const albedo = options.albedo ?? DEFAULT_ALBEDO;
-  const mesh = centerMesh(input);
+  const mesh = options.pixelsPerUnit === undefined ? centerMesh(input) : input;
 
   const half = {
     x: Math.max(Math.abs(mesh.bounds.min[0]), Math.abs(mesh.bounds.max[0])),
@@ -45,7 +51,7 @@ export function renderSixViews(input: Mesh, options: RenderOptions = {}): Record
     z: Math.max(Math.abs(mesh.bounds.min[2]), Math.abs(mesh.bounds.max[2])),
   };
   const widest = Math.max(half.x, half.y, half.z, Number.EPSILON);
-  const scale = (size * (1 - 2 * margin)) / (2 * widest);
+  const scale = options.pixelsPerUnit ?? (size * (1 - 2 * margin)) / (2 * widest);
 
   const out = {} as Record<ViewId, RenderedView>;
   for (const id of VIEW_IDS) out[id] = renderView(mesh, id, size, scale, albedo);

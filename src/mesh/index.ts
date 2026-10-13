@@ -5,8 +5,8 @@ import { parseObj } from "./obj.ts";
 import type { Mesh, MeshFormat } from "./types.ts";
 
 export * from "./types.ts";
-export { parseGlb } from "./glb.ts";
-export { parseObj } from "./obj.ts";
+export { glbHasSurfaceColor, parseGlb, wrapGlbRoot, writeGlb } from "./glb.ts";
+export { parseObj, toObj } from "./obj.ts";
 
 /** Returns geometry exactly as authored; the renderer owns centring and framing. */
 export function parseMesh(bytes: Uint8Array, format: MeshFormat): Mesh {

@@ -1,10 +1,20 @@
 import type { MeshFormat } from "../mesh/types.ts";
+import type { ViewId } from "../views.ts";
+
+export interface SourceImage {
+  readonly bytes: Uint8Array;
+  /** MIME type, e.g. `image/png`. */
+  readonly mime: string;
+}
+
+/** Named input views; `front` is always present. */
+export type ViewImages = { readonly front: SourceImage } & {
+  readonly [K in Exclude<ViewId, "front">]?: SourceImage;
+};
 
 export interface GenerateRequest {
-  /** Source 2D image bytes. */
-  readonly image: Uint8Array;
-  /** MIME type of `image`, e.g. `image/png`. */
-  readonly mime: string;
+  /** Views of one subject. Single-image providers read `front` only. */
+  readonly views: ViewImages;
   /** Provider-specific model id; each provider documents its default. */
   readonly model?: string | undefined;
   /** Extra provider input fields merged into the request body. */
@@ -18,6 +28,12 @@ export interface GeneratedMesh {
   readonly format: MeshFormat;
   readonly provider: string;
   readonly model: string;
+  /**
+   * Axis the subject's face points along in the delivered asset. The pipeline
+   * frames the subject facing +Z (`render/basis.ts`); "-z" assets are turned
+   * around before rendering. Omitted means +Z.
+   */
+  readonly facing?: "+z" | "-z";
   /** Raw provider payload, kept for debugging and for the web surface. */
   readonly raw: unknown;
 }
@@ -27,6 +43,8 @@ export interface MeshProvider {
   readonly label: string;
   /** Environment variable holding the credential; omitted when none is needed. */
   readonly credentialEnv?: string;
+  /** Conditions on several views of one subject; others are sent `views.front` only. */
+  readonly multiImage?: boolean;
   generate(request: GenerateRequest): Promise<GeneratedMesh>;
 }
 

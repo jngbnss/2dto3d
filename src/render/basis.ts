@@ -17,5 +17,4 @@ export const BASES: { readonly [K in ViewId]: Basis } = {
   left: { right: [0, 0, 1], up: [0, 1, 0], forward: [1, 0, 0] },
   right: { right: [0, 0, -1], up: [0, 1, 0], forward: [-1, 0, 0] },
   top: { right: [1, 0, 0], up: [0, 0, -1], forward: [0, -1, 0] },
-  bottom: { right: [1, 0, 0], up: [0, 0, 1], forward: [0, 1, 0] },
 };

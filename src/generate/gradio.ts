@@ -7,6 +7,29 @@
  * for the whole run, so state survives between calls.
  */
 
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+/**
+ * Hugging Face token, resolved the way `huggingface_hub` does: `HF_TOKEN`, then
+ * the file `huggingface-cli login` writes (`$HF_TOKEN_PATH`, else
+ * `$HF_HOME/token`, else `~/.cache/huggingface/token`). A token raises the
+ * shared ZeroGPU quota from the anonymous allowance to the account's.
+ */
+export function huggingFaceToken(): string | undefined {
+  const fromEnv = process.env["HF_TOKEN"]?.trim();
+  if (fromEnv) return fromEnv;
+  const path =
+    process.env["HF_TOKEN_PATH"] ??
+    join(process.env["HF_HOME"] ?? join(homedir(), ".cache", "huggingface"), "token");
+  try {
+    return readFileSync(path, "utf8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface GradioFile {
   readonly path: string;
   readonly url?: string;
@@ -41,6 +64,8 @@ export class GradioSpace {
   readonly host: string;
   readonly #options: GradioOptions;
   #functions: Map<string, number> | null = null;
+  /** `/gradio_api` on Gradio 5+, empty on Gradio 4 (absent from its config). */
+  #prefix = "";
 
   constructor(space: string, options: GradioOptions = {}) {
     this.#options = options;
@@ -55,33 +80,39 @@ export class GradioSpace {
       : extra;
   }
 
+  async #loadConfig(): Promise<Map<string, number>> {
+    if (this.#functions) return this.#functions;
+    const response = await fetch(`${this.host}/config`, { headers: this.#headers() });
+    if (!response.ok) {
+      throw new Error(`Space 설정을 읽지 못했습니다 (${response.status}): ${this.host}`);
+    }
+    const config = (await response.json()) as { dependencies?: GradioDependency[]; api_prefix?: string };
+    this.#prefix = (config.api_prefix ?? "").replace(/\/$/, "");
+    const map = new Map<string, number>();
+    (config.dependencies ?? []).forEach((dependency, index) => {
+      if (dependency.api_name) map.set(dependency.api_name, dependency.id ?? index);
+    });
+    this.#functions = map;
+    return map;
+  }
+
   /** Resolves an `api_name` to its queue function index from the Space config. */
   async functionIndex(apiName: string): Promise<number> {
-    if (!this.#functions) {
-      const response = await fetch(`${this.host}/config`, { headers: this.#headers() });
-      if (!response.ok) {
-        throw new Error(`Space 설정을 읽지 못했습니다 (${response.status}): ${this.host}`);
-      }
-      const config = (await response.json()) as { dependencies?: GradioDependency[] };
-      const map = new Map<string, number>();
-      (config.dependencies ?? []).forEach((dependency, index) => {
-        if (dependency.api_name) map.set(dependency.api_name, dependency.id ?? index);
-      });
-      this.#functions = map;
-    }
-    const found = this.#functions.get(apiName);
+    const functions = await this.#loadConfig();
+    const found = functions.get(apiName);
     if (found === undefined) {
       throw new Error(
-        `Space에 '${apiName}' 엔드포인트가 없습니다. 사용 가능: ${[...this.#functions.keys()].join(", ")}`,
+        `Space에 '${apiName}' 엔드포인트가 없습니다. 사용 가능: ${[...functions.keys()].join(", ")}`,
       );
     }
     return found;
   }
 
   async upload(bytes: Uint8Array, filename: string, mime: string): Promise<GradioFile> {
+    await this.#loadConfig();
     const form = new FormData();
     form.append("files", new Blob([bytes], { type: mime }), filename);
-    const response = await fetch(`${this.host}/gradio_api/upload`, {
+    const response = await fetch(`${this.host}${this.#prefix}/upload`, {
       method: "POST",
       headers: this.#headers(),
       body: form,
@@ -99,7 +130,7 @@ export class GradioSpace {
   /** Runs one function and resolves with its output data. */
   async call(apiName: string, data: readonly unknown[], sessionHash: string): Promise<unknown[]> {
     const fnIndex = await this.functionIndex(apiName);
-    const join = await fetch(`${this.host}/gradio_api/queue/join`, {
+    const join = await fetch(`${this.host}${this.#prefix}/queue/join`, {
       method: "POST",
       headers: this.#headers({ "Content-Type": "application/json" }),
       body: JSON.stringify({
@@ -120,7 +151,7 @@ export class GradioSpace {
       ? AbortSignal.any([this.#options.signal, timeout])
       : timeout;
 
-    const stream = await fetch(`${this.host}/gradio_api/queue/data?session_hash=${sessionHash}`, {
+    const stream = await fetch(`${this.host}${this.#prefix}/queue/data?session_hash=${sessionHash}`, {
       headers: this.#headers(),
       signal,
     });
@@ -165,13 +196,25 @@ export class GradioSpace {
     throw new Error(`'${apiName}' 결과를 받지 못한 채 스트림이 끊겼습니다.`);
   }
 
-  /** Turns a Space-relative file reference into an absolute download URL. */
+  /** Turns a Space-relative file reference into an absolute download URL. Valid after any call. */
   fileUrl(file: GradioFile): string {
     if (file.url) return file.url;
-    return `${this.host}/gradio_api/file=${file.path}`;
+    return `${this.host}${this.#prefix}/file=${file.path}`;
   }
 }
 
 export function newSessionHash(): string {
   return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+}
+
+/**
+ * Narrows one entry of a Space's output data to a file reference. Handlers that
+ * return `gr.update(value=...)` wrap the file as `{ value, __type__: "update" }`.
+ */
+export function asGradioFile(value: unknown): GradioFile | null {
+  if (value && typeof value === "object" && "__type__" in value && "value" in value) return asGradioFile(value.value);
+  if (!value || typeof value !== "object" || !("path" in value) || typeof value.path !== "string") return null;
+  // Checked above: the only required field of GradioFile is a string `path`.
+  const file: GradioFile = { ...value, path: value.path };
+  return file;
 }

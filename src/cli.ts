@@ -1,43 +1,47 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { writeFile } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import { VIEW_IDS } from "./views.ts";
 import { demoMesh } from "./mesh/primitives.ts";
 import { analyzeViewSet, formatReport, type ViewPaths } from "./analyze/report.ts";
-import { describeGrid } from "./reconstruct/carve.ts";
+import { loadTransforms } from "./orientation.ts";
 import {
-  carveFromViews,
+  reconstructFromViews,
   renderAndAnalyze,
   renderToDirectory,
-  runFromImage,
+  runFromViews,
   viewPathsFromDirectory,
 } from "./pipeline.ts";
 import { DEFAULT_PROVIDER, PROVIDERS } from "./generate/index.ts";
 import { startServer } from "./web/server.ts";
-import { cadEditorBuilt } from "./web/cad.ts";
 
-const USAGE = `sixview — 2D 이미지 1장에서 6면 뷰를 만들고 3D 복원 적합성을 분석합니다.
+const USAGE = `sixview — front/back/left/right/top 5면 정투영 이미지로 3D 메시를 복원합니다.
 
 사용법
-  sixview demo    [--out <dir>] [--size <px>] [--json <file>]
+  sixview serve   [--dir <dir>] [--port <n>]   5면 업로드·방향/정렬 보정·검증·3D 생성 + /viewer
+  sixview analyze <dir> | --front a.png … --top e.png [--json <file>]   정렬 품질만 검사
+  sixview build   <dir> | --front a.png … --top e.png [--out <dir>] [--res <n>] [--symmetry] [--rounding <0..1>] [--smoothing <n>]
+                  실루엣 교집합(visual hull) → 매끈한 메시 → <out>/model.glb, model.obj, voxels.glb, result/*.png
+  sixview demo    [--out <dir>] [--size <px>]   샘플 형상을 5면으로 렌더 (테스트용 입력)
   sixview render  <mesh.glb|obj> [--out <dir>] [--size <px>]
-  sixview analyze <dir> | --front a.png --back b.png … [--json <file>]
-  sixview carve   <dir> [--obj <file>] [--res <n>] [--tolerance <n>] [--json <file>]
-  sixview run     <image> [--provider <${Object.keys(PROVIDERS).join("|")}>] [--model <id>] [--out <dir>] [--size <px>]
-  sixview serve   [--dir <dir>] [--port <n>]   6면 미리보기 + /cad 3D CAD 편집기
+  sixview run     <dir> | --front a.png … [--provider <${Object.keys(PROVIDERS).join("|")}>] [--model <id>] [--out <dir>]
+                  (선택) 생성형 모델로 3D 생성 → 입력 비율 보정·색 입히기
+
+<dir>에 views.json(웹에서 저장한 회전·반전·보정 값)이 있으면 그대로 적용합니다.
 
 옵션
-  --out        결과 디렉터리 (기본 ./out)
+  --out        결과 디렉터리 (기본 ./out, build는 기본 <dir>)
   --size       렌더 해상도, 정사각 픽셀 (기본 512)
-  --obj        carve 출력 OBJ 경로 (기본 <out>/carved.obj)
-  --res        복셀 해상도, 가장 긴 축 기준 (기본 128)
-  --tolerance  실루엣 밖으로 벗어나도 허용할 뷰 수 (기본 0)
+  --res        복원 격자 해상도, 가장 긴 축 기준 (기본 160)
+  --symmetry   좌우 대칭 prior (자동차 등)
+  --rounding   곡면 보정 0~1: 수평 단면을 타원으로 깎아 대각선 모서리를 둥글게 (캐릭터 0.8~1, 자동차 0)
+  --smoothing  실루엣 보존 스무딩 반복 횟수 (기본 12)
   --model      공급자 모델 id (기본값은 공급자별 문서 참조)
   --json       분석 결과를 JSON으로 저장
 
-공급자 (기본 ${DEFAULT_PROVIDER})
+공급자 (run, 기본 ${DEFAULT_PROVIDER})
 ${Object.values(PROVIDERS)
   .map((p) => `  ${p.id.padEnd(12)} ${(p.credentialEnv ?? "키 불필요").padEnd(22)} ${p.label}`)
   .join("\n")}
@@ -50,9 +54,10 @@ async function main(argv: string[]): Promise<number> {
     options: {
       out: { type: "string" },
       size: { type: "string" },
-      obj: { type: "string" },
       res: { type: "string" },
-      tolerance: { type: "string" },
+      symmetry: { type: "boolean" },
+      rounding: { type: "string" },
+      smoothing: { type: "string" },
       provider: { type: "string" },
       model: { type: "string" },
       json: { type: "string" },
@@ -64,7 +69,6 @@ async function main(argv: string[]): Promise<number> {
       left: { type: "string" },
       right: { type: "string" },
       top: { type: "string" },
-      bottom: { type: "string" },
     },
   });
 
@@ -84,7 +88,7 @@ async function main(argv: string[]): Promise<number> {
   switch (command) {
     case "demo": {
       const render = await renderToDirectory(demoMesh(), outDirectory, renderOptions);
-      process.stdout.write(`6면 렌더 저장: ${render.directory}\n\n`);
+      process.stdout.write(`${VIEW_IDS.length}면 렌더 저장: ${render.directory}\n\n`);
       const report = await analyzeViewSet(render.paths);
       process.stdout.write(`${formatReport(report)}\n`);
       await maybeWriteJson(values.json, report);
@@ -95,62 +99,76 @@ async function main(argv: string[]): Promise<number> {
       const meshPath = positionals[1];
       if (!meshPath) throw new Error("메시 경로가 필요합니다: sixview render <mesh.glb>");
       const { render, report } = await renderAndAnalyze(resolve(meshPath), outDirectory, renderOptions);
-      process.stdout.write(`6면 렌더 저장: ${render.directory}\n\n${formatReport(report)}\n`);
+      process.stdout.write(`${VIEW_IDS.length}면 렌더 저장: ${render.directory}\n\n${formatReport(report)}\n`);
       await maybeWriteJson(values.json, report);
       return report.verdict === "fail" ? 2 : 0;
     }
 
     case "analyze": {
-      const paths = await collectViewPaths(positionals[1], values);
-      const provided = Object.keys(paths).length;
-      if (provided === 0) {
+      const directory = positionals[1];
+      const paths = await collectViewPaths(directory, values);
+      if (Object.keys(paths).length === 0) {
         throw new Error(
           `분석할 뷰를 찾지 못했습니다. 디렉터리에 ${VIEW_IDS.map((id) => `${id}.png`).join(", ")}을 두거나 --front 등으로 직접 지정하세요.`,
         );
       }
-      const report = await analyzeViewSet(paths);
+      const report = await analyzeViewSet(paths, directory ? await loadTransforms(resolve(directory)) : {});
       process.stdout.write(`${formatReport(report)}\n`);
       await maybeWriteJson(values.json, report);
       return report.verdict === "fail" ? 2 : 0;
     }
 
-    case "carve": {
-      const paths = await collectViewPaths(positionals[1], values);
+    case "build": {
+      const directory = positionals[1];
+      const paths = await collectViewPaths(directory, values);
       if (Object.keys(paths).length === 0) {
         throw new Error(
           `복원할 뷰를 찾지 못했습니다. 디렉터리에 ${VIEW_IDS.map((id) => `${id}.png`).join(", ")}을 두거나 --front 등으로 직접 지정하세요.`,
         );
       }
       const resolution = values.res === undefined ? undefined : Number.parseInt(values.res, 10);
-      if (resolution !== undefined && (!Number.isFinite(resolution) || resolution < 16 || resolution > 512)) {
-        throw new Error("--res는 16~512 사이여야 합니다.");
+      if (resolution !== undefined && (!Number.isFinite(resolution) || resolution < 32 || resolution > 384)) {
+        throw new Error("--res는 32~384 사이여야 합니다.");
       }
-      const objPath = resolve(values.obj ?? join(outDirectory, "carved.obj"));
-      const result = await carveFromViews(paths, objPath, {
+      const smoothing = values.smoothing === undefined ? undefined : Number.parseInt(values.smoothing, 10);
+      const result = await reconstructFromViews(paths, directory ? await loadTransforms(resolve(directory)) : {}, {
+        outputDirectory: values.out ? outDirectory : resolve(directory ?? "out"),
         ...(resolution === undefined ? {} : { resolution }),
-        ...(values.tolerance === undefined ? {} : { tolerance: Number.parseInt(values.tolerance, 10) }),
+        ...(smoothing === undefined || !Number.isFinite(smoothing) ? {} : { smoothing }),
+        symmetry: values.symmetry === true,
+        rounding: values.rounding === undefined ? 0 : Math.min(1, Math.max(0, Number.parseFloat(values.rounding) || 0)),
       });
       process.stdout.write(
-        `${formatReport(result.report)}\n\n복원 결과\n  ${describeGrid(result.grid)}\n  면 ${result.mesh.indices.length / 3}개 · 저장 ${result.objPath}\n`,
+        `${formatReport(result.report)}\n\n복원 결과 (해상도 ${result.resolution})\n` +
+          `  삼각형 ${(result.mesh.indices.length / 3).toLocaleString()}개\n` +
+          `  재투영 일치도 ${(result.score * 100).toFixed(1)}% — ${result.comparisons.map((c) => `${c.id} ${(c.iou * 100).toFixed(1)}%`).join(" · ")}\n` +
+          `  ${result.files.glb}\n  ${result.files.obj}\n  ${result.files.voxels}\n  재렌더: ${result.files.renders}\n`,
       );
-      await maybeWriteJson(values.json, result.report);
+      await maybeWriteJson(values.json, { report: result.report, comparisons: result.comparisons, score: result.score });
       return result.report.verdict === "fail" ? 2 : 0;
     }
 
     case "run": {
-      const imagePath = positionals[1];
-      if (!imagePath) throw new Error("입력 이미지가 필요합니다: sixview run <image.png>");
-      const result = await runFromImage(resolve(imagePath), {
+      const inputs = positionals.slice(1).map((path) => resolve(path));
+      const [first] = inputs;
+      const directory = first !== undefined && (await stat(first)).isDirectory() ? first : undefined;
+      const paths = await collectViewPaths(directory, values);
+      // Loose images are taken in canonical order: front, back, left, right, top.
+      if (!directory) inputs.slice(0, VIEW_IDS.length).forEach((path, i) => (paths[VIEW_IDS[i] ?? "front"] = path));
+      if (!paths.front) {
+        throw new Error("front 이미지가 필요합니다: sixview run <dir> | <front.png> [back.png] [left.png] [right.png] [top.png]");
+      }
+      const result = await runFromViews(paths, directory ? await loadTransforms(directory) : {}, {
         ...renderOptions,
         provider: values.provider ?? DEFAULT_PROVIDER,
         model: values.model,
         outputDirectory: outDirectory,
-        onProgress: (message) => process.stderr.write(`· ${message}\n`),
+        onProgress: (message: string) => process.stderr.write(`· ${message}\n`),
       });
       process.stdout.write(
-        `메시: ${result.meshPath}\n6면 렌더: ${result.render.directory}\n\n${formatReport(result.report)}\n`,
+        `입력\n${formatReport(result.inputReport)}\n\n메시: ${result.meshPath}\n결과 렌더: ${result.render.directory}\n\n${formatReport(result.report)}\n`,
       );
-      await maybeWriteJson(values.json, result.report);
+      await maybeWriteJson(values.json, { input: result.inputReport, result: result.report });
       return result.report.verdict === "fail" ? 2 : 0;
     }
 
@@ -158,11 +176,9 @@ async function main(argv: string[]): Promise<number> {
       const port = values.port === undefined ? 5173 : Number.parseInt(values.port, 10);
       const directory = resolve(values.dir ?? outDirectory);
       const server = await startServer({ port, directory });
-      const cadReady = await cadEditorBuilt();
       process.stdout.write(
         `웹 미리보기: ${server.url}\n` +
-          `3D CAD 편집기: ${server.url}cad` +
-          (cadReady ? "\n" : "  (미빌드 — cd cad && npm install && npm run build)\n") +
+          `3D 뷰어: ${server.url}viewer\n` +
           `뷰 디렉터리: ${directory}\n종료: Ctrl+C\n`,
       );
       const { promise } = Promise.withResolvers<number>();

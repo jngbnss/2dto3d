@@ -7,18 +7,15 @@ import { VIEWS, VIEW_IDS } from "../views.ts";
 import { viewPathsFromDirectory } from "../pipeline.ts";
 
 /**
- * Bridge between the six-view pipeline and the browser CAD editor.
+ * Serves the 3D viewer build (`cad/dist`, page `/viewer`) and describes what the
+ * pipeline has actually produced — honestly — under `/api/cad/models`.
  *
- * Two jobs, and the second one matters more than the first:
+ * The CAD editor that shares the build is intentionally unreachable here.
  *
- *  1. serve the built CAD editor (`cad/dist`) under `/cad`;
- *  2. describe what the pipeline has actually produced — honestly.
- *
- * A run that stopped after view generation has six PNGs and no geometry. The
- * descriptor for that run carries `asset: null`, so the editor refuses to import
- * it instead of creating an empty part. Only a completed carve produces an
- * importable asset, and even then it is reported as a triangle mesh, never as a
- * parametric CAD solid: space carving yields a voxel surface, not a B-rep.
+ * A run that stopped before generation has view PNGs and no geometry. The
+ * descriptor for that run carries `asset: null` instead of pretending a mesh
+ * exists. Generated and carved results are reported as triangle meshes, never as
+ * parametric CAD solids.
  */
 
 /** Project root, derived from this module's location (src/web/cad.ts). */
@@ -39,7 +36,7 @@ const STATIC_TYPES: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
-/** Geometry files the carve/render stages can leave behind, best first. */
+/** Geometry files a build leaves behind, best first. */
 const GEOMETRY_CANDIDATES: ReadonlyArray<{
   readonly file: string;
   readonly id: string;
@@ -48,25 +45,18 @@ const GEOMETRY_CANDIDATES: ReadonlyArray<{
   readonly note: string;
 }> = [
   {
-    file: "carved.obj",
-    id: "carved",
-    format: "obj",
-    label: "공간 카빙 결과 (carved.obj)",
-    note: "6면 실루엣 교집합으로 복원한 복셀 표면 메시입니다.",
-  },
-  {
     file: "model.glb",
     id: "model-glb",
     format: "glb",
-    label: "생성 모델 (model.glb)",
-    note: "공급자가 반환한 3D 자산입니다.",
+    label: "복원 메시 (model.glb)",
+    note: "5면 실루엣 교집합을 매끈한 표면으로 추출하고 뷰 색을 투영한 메시입니다.",
   },
   {
-    file: "model.obj",
-    id: "model-obj",
-    format: "obj",
-    label: "생성 모델 (model.obj)",
-    note: "공급자가 반환한 3D 자산입니다.",
+    file: "voxels.glb",
+    id: "voxels",
+    format: "glb",
+    label: "복셀 (voxels.glb)",
+    note: "같은 실루엣 교집합을 표면화 전 복셀 그대로 보여 줍니다.",
   },
 ];
 
@@ -140,7 +130,7 @@ export async function listModels(directory: string): Promise<CadModelDescriptor[
         단계: candidate.id === "carved" ? "space carving" : "provider generation",
         형식: "삼각형 메시 (B-rep 솔리드 아님)",
         설명: candidate.note,
-        ...(score !== null ? { "6면 일관성 점수": Math.round(score * 1000) / 10 } : {}),
+        ...(score !== null ? { "4면 일관성 점수": Math.round(score * 1000) / 10 } : {}),
         ...(verdict !== null ? { 판정: verdict } : {}),
       },
     });
@@ -150,7 +140,7 @@ export async function listModels(directory: string): Promise<CadModelDescriptor[
   if (descriptors.length === 0 && availableViews.length > 0) {
     descriptors.push({
       id: "views-only",
-      name: "6면 뷰만 생성됨 (3D 형상 없음)",
+      name: "4면 이미지만 있음 (3D 형상 없음)",
       createdAt: Date.now(),
       orthoViews,
       asset: null,
@@ -158,7 +148,7 @@ export async function listModels(directory: string): Promise<CadModelDescriptor[
         파이프라인: "sixview",
         단계: "view generation",
         보유: `${availableViews.length}개 뷰 이미지`,
-        안내: "carve 단계를 실행해야 3D 메시가 생깁니다. 미리보기 이미지는 형상이 아닙니다.",
+        안내: "3D 만들기를 실행해야 3D 메시가 생깁니다. 입력 이미지는 형상이 아닙니다.",
       },
     });
   }
@@ -172,42 +162,25 @@ export async function findModel(directory: string, id: string): Promise<CadModel
 }
 
 /**
- * Serves one file out of `cad/dist`, refusing anything that escapes it.
- * Returns false when the path is not a CAD asset so the caller can fall through.
+ * Serves one file of the viewer build out of `cad/dist`, refusing anything that
+ * escapes it. Only the viewer page and the hashed bundle under `assets/` are
+ * reachable; the CAD editor's `index.html` is deliberately not served.
  */
-async function serveStatic(pathname: string, response: ServerResponse): Promise<boolean> {
-  const relative = pathname === "/cad" || pathname === "/cad/" ? "index.html" : pathname.slice("/cad/".length);
+async function serveViewerFile(relative: string, response: ServerResponse): Promise<boolean> {
   const target = resolve(join(CAD_DIST, normalize(relative)));
-  if (target !== CAD_DIST && !target.startsWith(CAD_DIST + sep)) return false;
-
+  if (!target.startsWith(CAD_DIST + sep)) return false;
   const info = await stat(target).catch(() => null);
-  if (!info?.isFile()) {
-    // Unknown sub-path inside a single-page app: hand back index.html.
-    const index = join(CAD_DIST, "index.html");
-    const indexInfo = await stat(index).catch(() => null);
-    if (!indexInfo?.isFile()) return false;
-    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-    response.end(await readFile(index));
-    return true;
-  }
+  if (!info?.isFile()) return false;
 
   response.writeHead(200, {
     "Content-Type": STATIC_TYPES[extname(target).toLowerCase()] ?? "application/octet-stream",
     "Content-Length": info.size,
-    // Hashed bundle names make long caching safe; index.html must not be cached.
-    "Cache-Control": target.endsWith("index.html") ? "no-store" : "public, max-age=31536000, immutable",
+    // Hashed bundle names make long caching safe; the HTML page must not be cached.
+    "Cache-Control": target.endsWith(".html") ? "no-store" : "public, max-age=31536000, immutable",
   });
   createReadStream(target).pipe(response);
   return true;
 }
-
-export function cadEditorBuilt(): Promise<boolean> {
-  return stat(join(CAD_DIST, "index.html"))
-    .then((info) => info.isFile())
-    .catch(() => false);
-}
-
-export const CAD_DIST_PATH = CAD_DIST;
 
 /**
  * Handles every `/cad` and `/api/cad/...` request. Returns false when the
@@ -266,18 +239,25 @@ export async function handleCadRequest(
     return true;
   }
 
-  if (pathname === "/cad" || pathname.startsWith("/cad/")) {
-    if (await serveStatic(pathname, response)) return true;
-    response.writeHead(503, { "Content-Type": "text/html; charset=utf-8" });
+  const page = pathname === "/" ? "studio.html" : pathname === "/viewer" ? "viewer.html" : null;
+  if (page || pathname.startsWith("/cad/assets/")) {
+    if (await serveViewerFile(page ?? pathname.slice("/cad/".length), response)) return true;
+    response.writeHead(page ? 503 : 404, { "Content-Type": "text/html; charset=utf-8" });
     response.end(
-      `<!doctype html><meta charset="utf-8"><title>CAD 편집기 미빌드</title>` +
-        `<body style="font:14px/1.6 system-ui;background:#0f1115;color:#e6e9ef;padding:40px">` +
-        `<h1>CAD 편집기가 아직 빌드되지 않았습니다</h1>` +
-        `<p>다음을 실행한 뒤 새로고침하세요.</p>` +
-        `<pre style="background:#171a21;border:1px solid #272c36;border-radius:6px;padding:14px">cd cad\nnpm install\nnpm run build</pre>` +
-        `<p>개발 중에는 <code>cd cad &amp;&amp; npm run dev</code> 로 Vite 개발 서버를 쓰는 편이 빠릅니다.</p>` +
-        `</body>`,
+      page
+        ? `<!doctype html><meta charset="utf-8"><title>웹 화면 미빌드</title>` +
+            `<body style="font:14px/1.6 system-ui;background:#0f1115;color:#e6e9ef;padding:40px">` +
+            `<h1>웹 화면이 아직 빌드되지 않았습니다</h1>` +
+            `<pre style="background:#171a21;border:1px solid #272c36;border-radius:6px;padding:14px">npm run cad:install\nnpm run cad:build</pre></body>`
+        : "없음",
     );
+    return true;
+  }
+
+  // The CAD editor is not offered from this web surface.
+  if (pathname === "/cad" || pathname.startsWith("/cad/")) {
+    response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    response.end("없음");
     return true;
   }
 

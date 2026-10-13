@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/cad/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D 뷰어</title>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <header class="bar">
+      <strong>3D 뷰어</strong>
+      <select id="model" aria-label="모델 선택"></select>
+      <button type="button" id="spin" aria-pressed="true">자동 회전</button>
+      <button type="button" id="reset">시점 초기화</button>
+      <span class="views">
+        <button type="button" data-view="front">front</button>
+        <button type="button" data-view="back">back</button>
+        <button type="button" data-view="left">left</button>
+        <button type="button" data-view="right">right</button>
+        <button type="button" data-view="top">top</button>
+      </span>
+      <span class="views">
+        <button type="button" id="voxels">mesh ↔ voxel</button>
+        <button type="button" data-toggle="wireframe" aria-pressed="false">wireframe</button>
+        <button type="button" data-toggle="flat" aria-pressed="false">flat shading</button>
+        <button type="button" data-toggle="bbox" aria-pressed="false">bbox</button>
+        <button type="button" data-toggle="axes" aria-pressed="true">XYZ</button>
+      </span>
+      <a href="/">5면 입력</a>
+    </header>
+    <p id="status" class="status">불러오는 중…</p>
+    <p class="hint">드래그: 회전 · 휠: 확대/축소 · 우클릭 드래그: 이동</p>
+    <script type="module" src="/src/viewer/main.ts"></script>
+  </body>
+</html>

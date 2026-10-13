@@ -48,7 +48,7 @@ export interface AxisEstimate {
   }>;
 }
 
-export interface SixViewReport {
+export interface ViewSetReport {
   readonly score: number;
   readonly verdict: "pass" | "review" | "fail";
   readonly checks: readonly Check[];

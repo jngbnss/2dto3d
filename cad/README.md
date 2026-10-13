@@ -30,12 +30,29 @@ node src/cli.ts serve --dir out --port 5173
 
 ```
 웹 미리보기: http://127.0.0.1:5173/
+3D 뷰어: http://127.0.0.1:5173/viewer
 3D CAD 편집기: http://127.0.0.1:5173/cad
 뷰 디렉터리: C:\2dto3d\out
 ```
 
-* `/` — 기존 6면 분석 미리보기 (변경 없음, 우상단에 편집기 링크만 추가)
+* `/` — 기존 6면 분석 미리보기 (우상단에 뷰어·편집기 링크)
+* `/viewer` — 색이 입혀진 캐릭터를 360° 돌려 보는 뷰어 (`viewer.html`, 같은 `cad/dist` 빌드)
 * `/cad` — 3D CAD 편집기
+
+### 이미지 → 텍스처 3D 모델
+
+```bash
+node src/cli.ts run front.png --out out-kitty              # 1장
+node src/cli.ts run kitty_six_views_transparent --out out-kitty   # front.png… 가 든 폴더 (첫 장 = 정면)
+node src/cli.ts serve --dir out-kitty                      # → /viewer
+```
+
+기본 공급자는 `trellis` (Hugging Face Space TRELLIS)입니다. 여러 장을 한 번에
+받아 **베이크된 컬러 텍스처가 있는 GLB**를 돌려주므로 정점 색 메시처럼 뭉개지지
+않습니다. 결과는 `<out>/model.glb` 와 6면 렌더로 저장되고, 공급자가 -Z를 보는
+모델은 텍스처를 건드리지 않고 루트 노드 회전으로 +Z 정면에 맞춥니다.
+무료 ZeroGPU 할당량은 `HF_TOKEN` 또는 `huggingface-cli login` 토큰
+(`~/.cache/huggingface/token`)이 있으면 계정 할당량으로 늘어납니다.
 
 ### 편집기 개발 모드
 
@@ -118,7 +135,8 @@ CADRenderer (three.js)   ← 화면 표현만. 형상 계산 일절 없음.
 
 ## 5. AI 2D→3D 결과 연동
 
-`GET /api/cad/models` 가 `out` 디렉터리 상태를 그대로 보고합니다.
+`GET /api/cad/models` 가 `out` 디렉터리 상태를 그대로 보고합니다. 3D 뷰어도
+같은 목록을 읽고, 생성 모델(`model.glb`/`model.obj`)을 카빙 결과보다 먼저 보여줍니다.
 
 | 디렉터리 상태 | 보고 | 편집기 동작 |
 |---|---|---|

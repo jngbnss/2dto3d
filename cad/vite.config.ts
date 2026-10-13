@@ -1,13 +1,15 @@
+import { resolve } from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 /**
- * The editor is served by the sixview preview server under /cad, so the built
- * asset URLs must be /cad-relative. In dev, /api and /views are proxied to that
- * same server (`node src/cli.ts serve`) so the AI-result browser works without
- * a separate build.
+ * The pages are served by the sixview preview server (studio at `/`, assets
+ * under /cad), so the built asset URLs must be /cad-relative. In dev, the
+ * server's API, image and model routes are proxied to that same server
+ * (`node src/cli.ts serve`) so the pages work without a separate build.
  */
 const SIXVIEW_SERVER = process.env.SIXVIEW_SERVER ?? "http://127.0.0.1:5173";
+const PROXIED = ["/api", "/views", "/prepared", "/outline", "/result", "/model.glb", "/model.obj", "/voxels.glb", "/viewer"];
 
 export default defineConfig({
   base: "/cad/",
@@ -25,13 +27,18 @@ export default defineConfig({
     outDir: "dist",
     target: "es2022",
     chunkSizeWarningLimit: 4096,
+    rollupOptions: {
+      // Three pages: the CAD editor, the look-around viewer, and the 5-view upload studio.
+      input: {
+        main: resolve(import.meta.dirname, "index.html"),
+        viewer: resolve(import.meta.dirname, "viewer.html"),
+        studio: resolve(import.meta.dirname, "studio.html"),
+      },
+    },
   },
   server: {
     port: 5174,
     host: "127.0.0.1",
-    proxy: {
-      "/api/cad": { target: SIXVIEW_SERVER, changeOrigin: true },
-      "/views": { target: SIXVIEW_SERVER, changeOrigin: true },
-    },
+    proxy: Object.fromEntries(PROXIED.map((path) => [path, { target: SIXVIEW_SERVER, changeOrigin: true }])),
   },
 });

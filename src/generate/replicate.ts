@@ -41,8 +41,8 @@ export const replicateProvider: MeshProvider = {
       "Content-Type": "application/json",
     };
     const input = {
-      image: dataUri(request.image, request.mime),
-      images: [dataUri(request.image, request.mime)],
+      image: dataUri(request.views.front.bytes, request.views.front.mime),
+      images: [dataUri(request.views.front.bytes, request.views.front.mime)],
       ...request.options,
     };
 
