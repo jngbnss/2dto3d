@@ -19,6 +19,7 @@ import { analyzeViewSet, type ViewPaths } from "./analyze/report.ts";
 import { outlinePng, prepareViewSet, type PreparedSet } from "./preprocess.ts";
 import { validate } from "./validation.ts";
 import { buildHullField, DEFAULT_RESOLUTION } from "./reconstruct/voxel-reconstruct.ts";
+import { adviseResolution } from "./reconstruct/detail-resolution.ts";
 import { extractSurface, extractVoxels } from "./reconstruct/mesh-extract.ts";
 import { postprocessMesh } from "./reconstruct/mesh-postprocess.ts";
 import { paintFromViews, proportionScale, type PhotoConsistency } from "./reconstruct/finish.ts";
@@ -122,6 +123,8 @@ export interface ReconstructOptions {
   readonly hybridAi?: boolean;
   /** Grid cells along the longest axis. */
   readonly resolution?: number;
+  /** Raise voxel resolution when silhouettes contain sub-four-cell joints. Default: true. */
+  readonly adaptiveResolution?: boolean;
   /** Intersect with the X-mirrored hull (left-right symmetric subjects). */
   readonly symmetry?: boolean;
   /** Rounded cross-section prior 0..1 (0 = plain hull, 1 = elliptical slices). `silhouette` only. */
@@ -166,6 +169,9 @@ export interface ReconstructResult extends Evaluation {
   readonly mesh: Mesh;
   readonly meshQuality: MeshQuality;
   readonly resolution: number;
+  readonly requestedResolution: number;
+  readonly resolutionAdjusted: boolean;
+  readonly detailView?: ViewId;
   /** Method that produced `mesh` — `silhouette` when `ai` was asked for but the generator failed. */
   readonly method: ReconstructMethod;
   /** Concrete candidate selected by geometry/hybrid reconstruction. */
@@ -196,9 +202,19 @@ export async function reconstructFromViews(
     throw new Error(`필수 뷰가 없습니다: ${missingRequired.join(", ")}. top 뷰 없이는 길이·폭·윗면 형상을 제한할 수 없습니다.`);
   }
 
-  const resolution = options.resolution ?? DEFAULT_RESOLUTION;
+  const requestedResolution = options.resolution ?? DEFAULT_RESOLUTION;
   const silhouettes = new Map([...set.views].map(([id, view]) => [id, view.silhouette] as const));
   const frame = { pixelsPerUnit: set.pixelsPerUnit, extent: set.alignment.extent };
+  const resolutionAdvice = options.adaptiveResolution === false
+    ? { requested: requestedResolution, resolution: requestedResolution, adjusted: false, thinRatio: 0 }
+    : adviseResolution(silhouettes, frame, requestedResolution);
+  const resolution = resolutionAdvice.resolution;
+  if (resolutionAdvice.adjusted) {
+    options.onProgress?.(
+      `얇은 접합부가 감지되어 해상도를 ${requestedResolution}에서 ${resolution}(으)로 자동 상향합니다` +
+        (resolutionAdvice.view ? ` (${resolutionAdvice.view})` : ""),
+    );
+  }
   const symmetryX = options.symmetry ?? false;
   const out = options.outputDirectory;
   await mkdir(out, { recursive: true });
@@ -313,6 +329,9 @@ export async function reconstructFromViews(
     mesh,
     meshQuality: inspectMesh(mesh),
     resolution,
+    requestedResolution,
+    resolutionAdjusted: resolutionAdvice.adjusted,
+    ...(resolutionAdvice.view ? { detailView: resolutionAdvice.view } : {}),
     method,
     ...(strategy ? { strategy } : {}),
     ...(warning ? { warning } : {}),

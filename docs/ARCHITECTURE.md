@@ -52,7 +52,7 @@ flowchart LR
   E --> F{validation<br/>정렬 품질}
   F -->|통과/검토| G[signed distance<br/>visual hull]
   G --> H[Surface Nets]
-  H --> I[작은 덩어리 제거<br/>밴드 제한 Taubin]
+  H --> I[실루엣 확인 성분 보존<br/>밴드 제한 Taubin]
   I --> J[뷰 색 투영]
   J --> K[model.glb / model.obj / voxels.glb]
   K --> L[5방향 재렌더<br/>원본과 IoU 비교]
@@ -71,7 +71,8 @@ flowchart LR
 | `src/validation.ts` | 정렬 품질 점수: 축 비율 일관성, 뷰 일치도(거친 hull 재투영), 중심 정렬(축별 1D 점유 구간), 실루엣 대칭, 입력 상태 |
 | `src/reconstruct/voxel-reconstruct.ts` | 뷰별 2D signed distance(정확한 EDT)의 최솟값으로 만든 hull 거리장, 좌우 대칭 prior, 곡면 보정(수평 단면을 front 폭 × side 깊이에 내접하는 타원으로 제한 — 웹의 "캐릭터" 선택 시 1, "자동차·제품" 선택 시 0) |
 | `src/reconstruct/mesh-extract.ts` | Surface Nets(거리장 영점 보간) 메시, 복셀 메시 |
-| `src/reconstruct/mesh-postprocess.ts` | 작은 연결 성분 제거, 변위를 셀 0.6배로 제한한 Taubin 스무딩 |
+| `src/reconstruct/detail-resolution.ts` | 약 4 voxel보다 가는 접합부를 마스크에서 감지해 해상도를 한 단계 자동 상향 |
+| `src/reconstruct/mesh-postprocess.ts` | 실루엣이 확인한 연결 성분을 보존하고, 변위를 셀 0.6배로 제한한 Taubin 스무딩 |
 | `src/reconstruct/finish.ts` | 깊이 테스트를 거친 다중 뷰 색 투영, 보이지 않는 면 채우기, (생성형 경로) 비율 보정 |
 | `src/render/ortho.ts` | 정투영 래스터라이저. `pixelsPerUnit`를 주면 prepared 캔버스와 픽셀 단위로 정렬된다 |
 | `src/mesh/glb.ts`, `obj.ts` | GLB(법선·정점색) / OBJ 내보내기 |

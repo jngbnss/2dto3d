@@ -35,6 +35,9 @@ const RESULT_FILE = "result.json";
 interface StoredResult {
   readonly triangles: number;
   readonly resolution: number;
+  readonly requestedResolution?: number;
+  readonly resolutionAdjusted?: boolean;
+  readonly detailView?: ViewId | null;
   readonly method: ReconstructMethod;
   readonly strategy?: string;
   readonly warning?: string;
@@ -254,6 +257,9 @@ async function generate(directory: string, body: unknown): Promise<unknown> {
   const stored: StoredResult = {
     triangles: result.mesh.indices.length / 3,
     resolution: result.resolution,
+    requestedResolution: result.requestedResolution,
+    resolutionAdjusted: result.resolutionAdjusted,
+    detailView: result.detailView ?? null,
     method: result.method,
     ...(result.strategy ? { strategy: result.strategy } : {}),
     ...(result.warning ? { warning: result.warning } : {}),
@@ -319,6 +325,9 @@ async function state(directory: string): Promise<unknown> {
       voxelUrl: `/voxels.glb?t=${stamp}`,
       triangles: stored.triangles,
       resolution: stored.resolution,
+      requestedResolution: stored.requestedResolution ?? stored.resolution,
+      resolutionAdjusted: stored.resolutionAdjusted ?? false,
+      detailView: stored.detailView ?? null,
       method: stored.method ?? "silhouette",
       strategy: stored.strategy ?? null,
       warning: stored.warning ?? null,

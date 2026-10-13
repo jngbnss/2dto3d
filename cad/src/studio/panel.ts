@@ -299,7 +299,18 @@ export function renderResult(result: GenerateResult, stamp: number): HTMLElement
       h("span", {}, "방식 ", h("strong", {}, methodLabel[result.method])),
       result.strategy ? h("span", {}, "선택 ", h("strong", {}, result.strategy)) : null,
       h("span", {}, "삼각형 ", h("strong", {}, result.triangles.toLocaleString("ko-KR"))),
-      h("span", {}, "해상도 ", h("strong", {}, String(result.resolution))),
+      h(
+        "span",
+        {},
+        "해상도 ",
+        h(
+          "strong",
+          {},
+          result.resolutionAdjusted
+            ? `${result.requestedResolution} → ${result.resolution} 자동 (${result.detailView ?? "얇은 구조"})`
+            : String(result.resolution),
+        ),
+      ),
       h(
         "span",
         {},

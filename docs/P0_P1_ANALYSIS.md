@@ -18,7 +18,7 @@ Existing Stanley five-view set in `out-studio/` served as regression input.
 5. Validate extent consistency, coarse-hull reprojection, axis profiles, opposite-view
    agreement, and input integrity.
 6. Build visual hull as minimum of per-view 2D signed-distance fields.
-7. Extract zero surface with Surface Nets. Remove components below 2% of triangles.
+7. Extract zero surface with Surface Nets. Preserve silhouette-confirmed components; the former 2% deletion rule was removed.
    Apply bounded Taubin smoothing.
 8. Project input colours onto visible, camera-facing vertices. Resolve detected colour
    conflicts by selecting strongest-facing view; flood unseen vertices from neighbours.

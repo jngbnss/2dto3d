@@ -9,10 +9,34 @@ import { parseGlb } from "../src/mesh/index.ts";
 import { reconstructFromViews, renderToDirectory } from "../src/pipeline.ts";
 import { colourDistance } from "../src/reconstruct/finish.ts";
 import { ellipticCylinderMesh } from "../src/reconstruct/geometry-reconstruct.ts";
+import { adviseResolution } from "../src/reconstruct/detail-resolution.ts";
+import type { Silhouette } from "../src/analyze/silhouette.ts";
 import type { ViewPaths } from "../src/analyze/report.ts";
 
 const SIZE = 256;
 const RESOLUTION = 96;
+
+test("thin joint evidence raises voxel resolution one bounded tier", () => {
+  const width = 128;
+  const height = 96;
+  const mask = new Uint8Array(width * height);
+  for (let y = 20; y < 76; y++) {
+    for (let x = 10; x < 48; x++) mask[y * width + x] = 1;
+    for (let x = 80; x < 118; x++) mask[y * width + x] = 1;
+  }
+  for (let y = 46; y < 50; y++) for (let x = 48; x < 80; x++) mask[y * width + x] = 1;
+  const area = mask.reduce((sum, value) => sum + value, 0);
+  const silhouette = { width, height, mask, area } as Silhouette;
+  const advice = adviseResolution(
+    new Map([["front", silhouette]]),
+    { pixelsPerUnit: 48, extent: { x: 2, y: 2, z: 1 } },
+    64,
+  );
+
+  assert.equal(advice.adjusted, true);
+  assert.equal(advice.resolution, 96);
+  assert.equal(advice.view, "front");
+});
 
 async function fixture(): Promise<{ directory: string; paths: ViewPaths }> {
   const directory = await mkdtemp(join(tmpdir(), "sixview-build-"));

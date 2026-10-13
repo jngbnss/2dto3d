@@ -89,6 +89,9 @@ export interface GenerateResult {
   voxelUrl: string;
   triangles: number;
   resolution: number;
+  requestedResolution: number;
+  resolutionAdjusted: boolean;
+  detailView: ViewId | null;
   /** Method that produced the mesh; `silhouette` when AI was asked for but failed. */
   method: Method;
   strategy: string | null;
