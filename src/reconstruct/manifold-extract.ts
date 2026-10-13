@@ -2,17 +2,23 @@ import ManifoldModule from "manifold-3d";
 import { computeBounds, type Mesh } from "../mesh/types.ts";
 import type { HullField } from "./voxel-reconstruct.ts";
 
-const modulePromise = ManifoldModule().then((module) => {
-  module.setup();
-  return module;
-});
+type ManifoldRuntime = Awaited<ReturnType<typeof ManifoldModule>>;
+let runtimePromise: Promise<ManifoldRuntime> | undefined;
+
+function manifoldRuntime(): Promise<ManifoldRuntime> {
+  runtimePromise ??= ManifoldModule().then((module) => {
+    module.setup();
+    return module;
+  });
+  return runtimePromise;
+}
 
 /**
  * Robust SDF extraction backed by Manifold's body-centred-cubic level-set
  * polygonizer. Used only when the faster Surface Nets result is non-manifold.
  */
 export async function extractManifoldSurface(field: HullField): Promise<Mesh> {
-  const module = await modulePromise;
+  const module = await manifoldRuntime();
   const max = [
     field.origin[0] + (field.nx - 1) * field.cell,
     field.origin[1] + (field.ny - 1) * field.cell,
