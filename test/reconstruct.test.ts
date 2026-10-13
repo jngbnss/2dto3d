@@ -19,6 +19,26 @@ async function fixture(): Promise<{ directory: string; paths: ViewPaths }> {
   return { directory, paths: render.paths };
 }
 
+function connectedComponents(indices: Uint32Array, vertexCount: number): number {
+  const parent = Int32Array.from({ length: vertexCount }, (_, index) => index);
+  const find = (value: number): number => {
+    let root = value;
+    while ((parent[root] ?? root) !== root) root = parent[root] ?? root;
+    while (value !== root) {
+      const next = parent[value] ?? value;
+      parent[value] = root;
+      value = next;
+    }
+    return root;
+  };
+  for (let index = 0; index < indices.length; index += 3) {
+    const root = find(indices[index] ?? 0);
+    parent[find(indices[index + 1] ?? 0)] = root;
+    parent[find(indices[index + 2] ?? 0)] = root;
+  }
+  return new Set(Array.from({ length: vertexCount }, (_, index) => find(index))).size;
+}
+
 test("the reconstructed mesh re-projects onto every input silhouette", async (t) => {
   const { directory, paths } = await fixture();
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -61,6 +81,48 @@ test("default reconstruction preserves a unilateral product feature", async (t) 
   assert.ok(front && symmetricFront);
   assert.ok(front.iou > 0.96, `default front IoU ${front.iou.toFixed(3)}`);
   assert.ok(front.iou > symmetricFront.iou + 0.08, `${front.iou.toFixed(3)} vs symmetric ${symmetricFront.iou.toFixed(3)}`);
+});
+
+test("a silhouette-confirmed small detached part is not removed", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "sixview-small-part-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = mergeMeshes([
+    boxMesh({ size: [0.9, 1.4, 0.8] }),
+    boxMesh({ size: [0.12, 0.12, 0.12], at: [0.7, 0.9, 0.62] }),
+  ]);
+  const paths = (await renderToDirectory(source, join(directory, "input"), { size: SIZE })).paths;
+
+  const result = await reconstructFromViews(paths, {}, {
+    outputDirectory: join(directory, "result"),
+    resolution: 128,
+    smoothing: 0,
+  });
+
+  assert.ok(connectedComponents(result.mesh.indices, result.mesh.positions.length / 3) >= 2);
+  assert.ok(result.score > 0.94, `mean IoU ${result.score.toFixed(3)}`);
+});
+
+test("a through-hole visible in opposite silhouettes stays open", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "sixview-hole-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = mergeMeshes([
+    boxMesh({ size: [1.2, 0.2, 0.4], at: [0, 0.7, 0] }),
+    boxMesh({ size: [1.2, 0.2, 0.4], at: [0, -0.7, 0] }),
+    boxMesh({ size: [0.2, 1.2, 0.4], at: [-0.5, 0, 0] }),
+    boxMesh({ size: [0.2, 1.2, 0.4], at: [0.5, 0, 0] }),
+  ]);
+  const paths = (await renderToDirectory(source, join(directory, "input"), { size: SIZE })).paths;
+
+  const result = await reconstructFromViews(paths, {}, {
+    outputDirectory: join(directory, "result"),
+    resolution: RESOLUTION,
+    smoothing: 0,
+  });
+  const front = await sharp(join(result.files.renders, "front.png")).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const centre = (Math.floor(front.info.height / 2) * front.info.width + Math.floor(front.info.width / 2)) * 4 + 3;
+
+  assert.equal(front.data[centre], 0, "front-view hole centre must remain transparent");
+  assert.ok((result.comparisons.find((view) => view.id === "front")?.iou ?? 0) > 0.96);
 });
 
 test("the exported surface is closed: every edge is shared by exactly two triangles", async (t) => {
