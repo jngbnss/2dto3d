@@ -8,6 +8,7 @@ import { prepareViewSet } from "../preprocess.ts";
 import { validate } from "../validation.ts";
 import { reconstructFromViews, viewPathsFromDirectory, writePrepared, type ReconstructMethod } from "../pipeline.ts";
 import type { ViewSetReport } from "../analyze/types.ts";
+import type { MeshQuality } from "../quality.ts";
 import { handleCadRequest } from "./cad.ts";
 
 export interface ServerOptions {
@@ -38,8 +39,19 @@ interface StoredResult {
   readonly strategy?: string;
   readonly warning?: string;
   readonly score: number;
+  readonly shapeScore: number;
+  readonly textureScore: number;
   readonly colourScore: number;
-  readonly comparisons: ReadonlyArray<{ readonly id: ViewId; readonly iou: number; readonly colour: number }>;
+  readonly meshQuality: MeshQuality;
+  readonly comparisons: ReadonlyArray<{
+    readonly id: ViewId;
+    readonly iou: number;
+    readonly contourDistance: number;
+    readonly centerError: number;
+    readonly ratioError: number;
+    readonly colourMatch: number;
+    readonly colour: number;
+  }>;
   /** `ai` only: the generated shape fitted to the views, before silhouette correction. */
   readonly generated?: { readonly score: number; readonly colourScore: number; readonly yaw: number };
 }
@@ -246,7 +258,10 @@ async function generate(directory: string, body: unknown): Promise<unknown> {
     ...(result.strategy ? { strategy: result.strategy } : {}),
     ...(result.warning ? { warning: result.warning } : {}),
     score: result.score,
+    shapeScore: result.shapeScore,
+    textureScore: result.textureScore,
     colourScore: result.colourScore,
+    meshQuality: result.meshQuality,
     comparisons: result.comparisons,
     ...(result.generated
       ? { generated: { score: result.generated.score, colourScore: result.generated.colourScore, yaw: result.generated.yaw } }
@@ -297,7 +312,7 @@ async function state(directory: string): Promise<unknown> {
     const stored = JSON.parse(await readFile(join(directory, RESULT_FILE), "utf8")) as StoredResult;
     await stat(join(directory, "model.glb"));
     // Results saved before colour agreement existed are rebuilt rather than shown half-empty.
-    if (typeof stored.colourScore !== "number") throw new Error("stale result");
+    if (typeof stored.colourScore !== "number" || typeof stored.shapeScore !== "number" || typeof stored.textureScore !== "number") throw new Error("stale result");
     result = {
       glbUrl: `/model.glb?t=${stamp}`,
       objUrl: `/model.obj?t=${stamp}`,
@@ -309,10 +324,17 @@ async function state(directory: string): Promise<unknown> {
       warning: stored.warning ?? null,
       generated: stored.generated ? { ...stored.generated, glbUrl: `/ai-raw.glb?t=${stamp}` } : null,
       score: stored.score,
+      shapeScore: stored.shapeScore,
+      textureScore: stored.textureScore,
       colourScore: stored.colourScore,
+      meshQuality: stored.meshQuality,
       comparisons: stored.comparisons.map((c) => ({
         id: c.id,
         iou: c.iou,
+        contourDistance: c.contourDistance,
+        centerError: c.centerError,
+        ratioError: c.ratioError,
+        colourMatch: c.colourMatch,
         colour: c.colour,
         originalUrl: `/prepared/${c.id}?t=${stamp}`,
         renderUrl: `/result/${c.id}?t=${stamp}`,

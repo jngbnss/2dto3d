@@ -73,6 +73,10 @@ export interface Comparison {
   /** Result rendered grey with colour-conflict vertices in red. */
   conflictUrl: string;
   iou: number;
+  contourDistance: number;
+  centerError: number;
+  ratioError: number;
+  colourMatch: number;
   /** 0..1 share of this view's jointly seen surface whose colour agrees with the other views. */
   colour: number;
 }
@@ -94,8 +98,17 @@ export interface GenerateResult {
   generated: { score: number; colourScore: number; yaw: number; glbUrl: string } | null;
   /** 0..1 mean reprojection IoU. */
   score: number;
+  shapeScore: number;
+  textureScore: number;
   /** 0..1 photo-consistency: do the views agree on the surface's colour? */
   colourScore: number;
+  meshQuality: {
+    components: number;
+    boundaryEdges: number;
+    nonManifoldEdges: number;
+    degenerateTriangles: number;
+    selfIntersections: number | null;
+  };
   comparisons: Comparison[];
 }
 

@@ -17,7 +17,7 @@ import {
 import { renderViews, type RenderedView, type RenderOptions } from "./render/ortho.ts";
 import { analyzeViewSet, type ViewPaths } from "./analyze/report.ts";
 import { outlinePng, prepareViewSet, type PreparedSet } from "./preprocess.ts";
-import { maskIoU, validate } from "./validation.ts";
+import { validate } from "./validation.ts";
 import { buildHullField, DEFAULT_RESOLUTION } from "./reconstruct/voxel-reconstruct.ts";
 import { extractSurface, extractVoxels } from "./reconstruct/mesh-extract.ts";
 import { postprocessMesh } from "./reconstruct/mesh-postprocess.ts";
@@ -27,6 +27,7 @@ import { bestGeometryCandidate, scoreSilhouetteFit } from "./reconstruct/geometr
 import type { Silhouette } from "./analyze/silhouette.ts";
 import type { ViewTransforms } from "./orientation.ts";
 import type { AxisEstimate, ViewSetReport } from "./analyze/types.ts";
+import { compareProjection, inspectMesh, type MeshQuality } from "./quality.ts";
 import {
   aiProvider,
   resolveProvider,
@@ -136,6 +137,10 @@ export interface ViewComparison {
   readonly id: ViewId;
   /** Input silhouette vs the result rendered back into this view. */
   readonly iou: number;
+  readonly contourDistance: number;
+  readonly centerError: number;
+  readonly ratioError: number;
+  readonly colourMatch: number;
   /** Share of this view's jointly seen surface whose colour agrees with the other views. */
   readonly colour: number;
 }
@@ -144,6 +149,10 @@ export interface Evaluation {
   readonly comparisons: readonly ViewComparison[];
   /** Mean silhouette IoU of `comparisons`. */
   readonly score: number;
+  /** Composite reprojection shape score: IoU, contour, centre and ratio. */
+  readonly shapeScore: number;
+  /** Direct source-pixel versus rerender colour match. */
+  readonly textureScore: number;
   /**
    * Photo-consistency of the coloured surface, 0..1: where two photos see the
    * same point, do they agree on its colour? Silhouettes can match perfectly
@@ -155,6 +164,7 @@ export interface Evaluation {
 export interface ReconstructResult extends Evaluation {
   readonly report: ViewSetReport;
   readonly mesh: Mesh;
+  readonly meshQuality: MeshQuality;
   readonly resolution: number;
   /** Method that produced `mesh` — `silhouette` when `ai` was asked for but the generator failed. */
   readonly method: ReconstructMethod;
@@ -301,6 +311,7 @@ export async function reconstructFromViews(
   return {
     report,
     mesh,
+    meshQuality: inspectMesh(mesh),
     resolution,
     method,
     ...(strategy ? { strategy } : {}),
@@ -335,13 +346,20 @@ async function generateFitted(
 function evaluate(set: PreparedSet, mesh: Mesh, consistency: PhotoConsistency): Evaluation {
   const size = [...set.views.values()][0]?.silhouette.width ?? 512;
   const rendered = renderViews(mesh, { size, pixelsPerUnit: set.pixelsPerUnit });
-  const comparisons = [...set.views.values()].map((view) => ({
-    id: view.id,
-    iou: maskIoU(view.silhouette, rendered[view.id].pixels),
-    colour: consistency.perView.get(view.id) ?? 1,
-  }));
+  const comparisons = [...set.views.values()].map((view) => {
+    const quality = compareProjection(view.silhouette, view.raster, rendered[view.id]);
+    return { id: view.id, ...quality, colour: consistency.perView.get(view.id) ?? 1 };
+  });
   const score = comparisons.reduce((sum, c) => sum + c.iou, 0) / Math.max(comparisons.length, 1);
-  return { comparisons, score, colourScore: consistency.score };
+  const mean = (key: "contourDistance" | "centerError" | "ratioError" | "colourMatch"): number =>
+    comparisons.reduce((sum, comparison) => sum + comparison[key], 0) / Math.max(comparisons.length, 1);
+  const clamp = (value: number): number => Math.max(0, Math.min(1, value));
+  const shapeScore =
+    score * 0.65 +
+    clamp(1 - mean("contourDistance") / 0.02) * 0.15 +
+    clamp(1 - mean("centerError") / 0.02) * 0.1 +
+    clamp(1 - mean("ratioError") / 0.05) * 0.1;
+  return { comparisons, score, shapeScore, textureScore: mean("colourMatch"), colourScore: consistency.score };
 }
 
 /** The mesh in muted grey with every colour-conflict vertex in red, for the conflict renders. */

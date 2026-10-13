@@ -253,7 +253,9 @@ export function renderResult(result: GenerateResult, stamp: number): HTMLElement
         { class: "compare-name" },
         h("strong", {}, c.id),
         h("span", { class: `iou tone-${grade(c.iou)}` }, `외곽 ${(c.iou * 100).toFixed(1)}%`),
-        h("span", { class: `iou tone-${grade(c.colour)}` }, `색 ${(c.colour * 100).toFixed(1)}%`),
+        h("span", {}, `거리 ${(c.contourDistance * 100).toFixed(2)}%`),
+        h("span", {}, `중심 ${(c.centerError * 100).toFixed(2)}%`),
+        h("span", { class: `iou tone-${grade(c.colourMatch)}` }, `텍스처 ${(c.colourMatch * 100).toFixed(1)}%`),
       ),
       h(
         "figure",
@@ -301,15 +303,23 @@ export function renderResult(result: GenerateResult, stamp: number): HTMLElement
       h(
         "span",
         {},
-        "외곽 일치도 ",
-        h("strong", { class: `tone-${grade(result.score)}` }, String(Math.round(result.score * 100))),
+        "형상 점수 ",
+        h("strong", { class: `tone-${grade(result.shapeScore)}` }, String(Math.round(result.shapeScore * 100))),
       ),
       h(
         "span",
         {},
-        "색 일치도 ",
-        h("strong", { class: `tone-${grade(result.colourScore)}` }, String(Math.round(result.colourScore * 100))),
+        "텍스처 점수 ",
+        h("strong", { class: `tone-${grade(result.textureScore)}` }, String(Math.round(result.textureScore * 100))),
       ),
+      h("span", {}, "색 충돌 일관성 ", h("strong", { class: `tone-${grade(result.colourScore)}` }, String(Math.round(result.colourScore * 100)))),
+    ),
+    h(
+      "p",
+      { class: "muted small" },
+      `메시: 연결 성분 ${result.meshQuality.components} · 경계 엣지 ${result.meshQuality.boundaryEdges} · ` +
+        `비다양체 ${result.meshQuality.nonManifoldEdges} · 퇴화 삼각형 ${result.meshQuality.degenerateTriangles} · ` +
+        `자기교차 ${result.meshQuality.selfIntersections === null ? "검사 한도 초과" : result.meshQuality.selfIntersections}`,
     ),
     result.warning ? h("p", { class: "warn-note" }, result.warning) : null,
     result.generated

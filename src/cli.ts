@@ -148,14 +148,18 @@ async function main(argv: string[]): Promise<number> {
         rounding: values.rounding === undefined ? 0 : Math.min(1, Math.max(0, Number.parseFloat(values.rounding) || 0)),
         onProgress: (message: string) => process.stderr.write(`· ${message}\n`),
       });
-      const scores = (label: string, e: { score: number; colourScore: number; comparisons: ReadonlyArray<{ id: string; iou: number; colour: number }> }): string =>
-        `  ${label} 외곽 ${(e.score * 100).toFixed(1)}% · 색 ${(e.colourScore * 100).toFixed(1)}% — ` +
+      const scores = (label: string, e: { score: number; shapeScore?: number; textureScore?: number; colourScore: number; comparisons: ReadonlyArray<{ id: string; iou: number; colour: number }> }): string =>
+        `  ${label} 외곽 ${(e.score * 100).toFixed(1)}%` +
+        (e.shapeScore === undefined ? "" : ` · 형상 ${(e.shapeScore * 100).toFixed(1)}%`) +
+        (e.textureScore === undefined ? "" : ` · 텍스처 ${(e.textureScore * 100).toFixed(1)}%`) +
+        ` · 색 충돌 일관성 ${(e.colourScore * 100).toFixed(1)}% — ` +
         e.comparisons.map((c) => `${c.id} ${(c.iou * 100).toFixed(0)}/${(c.colour * 100).toFixed(0)}`).join(" · ");
       process.stdout.write(
         `${formatReport(result.report)}\n\n복원 결과 (${result.method}, 해상도 ${result.resolution})\n` +
           (result.strategy ? `  선택 후보 ${result.strategy}\n` : "") +
           (result.warning ? `  [경고] ${result.warning}\n` : "") +
           `  삼각형 ${(result.mesh.indices.length / 3).toLocaleString()}개\n` +
+          `  메시 연결성 ${result.meshQuality.components}개 · 경계 ${result.meshQuality.boundaryEdges} · 비다양체 ${result.meshQuality.nonManifoldEdges} · 자기교차 ${result.meshQuality.selfIntersections ?? "검사 한도 초과"}\n` +
           (result.generated ? `${scores(`AI 원본(회전 ${result.generated.yaw}°)`, result.generated)}\n` : "") +
           `${scores("결과", result)}\n` +
           `  ${result.files.glb}\n  ${result.files.obj}\n  ${result.files.voxels}\n  재렌더: ${result.files.renders}\n`,
