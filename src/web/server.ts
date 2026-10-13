@@ -234,10 +234,11 @@ async function generate(directory: string, body: unknown): Promise<unknown> {
     ...(resolution === undefined ? {} : { resolution }),
     ...(smoothing === undefined ? {} : { smoothing }),
     symmetry: options["symmetry"] === true,
+    hybridAi: options["hybridAi"] === true,
     rounding: typeof options["rounding"] === "number" ? Math.min(1, Math.max(0, options["rounding"])) : 0,
     onProgress: (message) => process.stdout.write(`· ${message}\n`),
   });
-  if (result.method !== "ai") await rm(join(directory, "ai-raw.glb"), { force: true });
+  if (!result.generated) await rm(join(directory, "ai-raw.glb"), { force: true });
   const stored: StoredResult = {
     triangles: result.mesh.indices.length / 3,
     resolution: result.resolution,

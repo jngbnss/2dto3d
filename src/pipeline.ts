@@ -117,6 +117,8 @@ export interface ReconstructOptions {
   readonly method?: ReconstructMethod;
   /** Image-to-3D provider for `method: "ai"`; defaults to the project default. */
   readonly provider?: string;
+  /** Include the configured AI provider as a hybrid candidate. May use network/GPU. */
+  readonly hybridAi?: boolean;
   /** Grid cells along the longest axis. */
   readonly resolution?: number;
   /** Intersect with the X-mirrored hull (left-right symmetric subjects). */
@@ -250,6 +252,25 @@ export async function reconstructFromViews(
     } else {
       surface = silhouette;
       strategy = "silhouette";
+    }
+  }
+  if (method === "hybrid" && options.hybridAi) {
+    try {
+      const fitted = await generateFitted(set, silhouettes, frame, options);
+      const glb = join(out, "ai-raw.glb");
+      const raw = paintFromViews(fitted.mesh, set.views, rasters, set.pixelsPerUnit);
+      await writeFile(glb, writeGlb(raw.mesh));
+      generated = { ...evaluate(set, raw.mesh, raw.consistency), yaw: fitted.yaw, glb };
+      const corrected = correctToHull(fitted.mesh, hull);
+      const aiFit = scoreSilhouetteFit(corrected, silhouettes, frame.pixelsPerUnit);
+      const currentFit = scoreSilhouetteFit(surface ?? getSilhouetteSurface(), silhouettes, frame.pixelsPerUnit);
+      if (aiFit.minimumViewScore >= 0.88 && aiFit.score >= currentFit.score - 0.03) {
+        surface = corrected;
+        strategy = "ai+silhouette";
+      }
+    } catch (error) {
+      warning = `하이브리드 AI 후보를 만들지 못해 로컬 후보만 비교했습니다: ${error instanceof Error ? error.message : String(error)}`;
+      options.onProgress?.(warning);
     }
   }
   if (!surface) {

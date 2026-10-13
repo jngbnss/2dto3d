@@ -113,6 +113,8 @@ export type Resolution = 96 | 128 | 160 | 192 | 256;
 export interface GenerateOptions {
   /** `ai`: generated shape corrected by the silhouettes (characters); `silhouette`: visual hull only. */
   method?: Method;
+  /** Hybrid mode only: call configured AI provider in addition to local candidates. */
+  hybridAi?: boolean;
   resolution?: Resolution;
   symmetry?: boolean;
   smoothing?: number;

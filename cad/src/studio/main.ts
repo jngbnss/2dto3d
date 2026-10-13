@@ -18,7 +18,7 @@ const ui = {
   tuneOpen: new Set<ViewId>(),
   generating: false,
   loadingAll: false,
-  form: { resolution: 160, smoothing: 12, ...CHARACTER } as GenerateForm,
+  form: { resolution: 160, smoothing: 12, hybridAi: false, ...CHARACTER } as GenerateForm,
 };
 
 let current: State | null = null;

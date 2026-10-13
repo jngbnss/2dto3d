@@ -1,5 +1,5 @@
 import { hunyuanProvider } from "./hunyuan.ts";
-import { localAiAvailable, localProvider } from "./local.ts";
+import { localProvider } from "./local.ts";
 import { trellisProvider } from "./trellis.ts";
 import { instantMeshProvider } from "./instantmesh.ts";
 import { falProvider } from "./fal.ts";
@@ -7,9 +7,9 @@ import { replicateProvider } from "./replicate.ts";
 import type { MeshProvider } from "./provider.ts";
 
 /**
- * First entry is the default: no credential, conditions on all four named views.
- * `local` runs the same model on this machine; `aiProvider()` prefers it when
- * its server is up. TRELLIS stays as the textured alternative.
+ * TRELLIS is the default: multi-image, textured GLB, MIT-licensed upstream.
+ * Hunyuan remains available only after explicit license acknowledgement because
+ * its community license excludes several territories, including South Korea.
  */
 export const PROVIDERS: Record<string, MeshProvider> = {
   hunyuan: hunyuanProvider,
@@ -20,14 +20,22 @@ export const PROVIDERS: Record<string, MeshProvider> = {
   replicate: replicateProvider,
 };
 
-export const DEFAULT_PROVIDER = "hunyuan";
+export const DEFAULT_PROVIDER = "trellis";
 
-/** Provider for the AI method when none is named: the local GPU server if it is running, else the Space. */
+/** Provider for the AI method when none is named. */
 export async function aiProvider(): Promise<string> {
-  return (await localAiAvailable()) ? "local" : DEFAULT_PROVIDER;
+  const configured = process.env["SIXVIEW_AI_PROVIDER"]?.trim();
+  if (configured) return configured;
+  return DEFAULT_PROVIDER;
 }
 
 export function resolveProvider(id: string): MeshProvider {
+  if ((id === "hunyuan" || id === "local") && process.env["SIXVIEW_ENABLE_HUNYUAN"] !== "1") {
+    throw new Error(
+      "Hunyuan3D-2는 공식 커뮤니티 라이선스의 지역 제한을 확인해야 합니다. " +
+      "적용 지역에서만 SIXVIEW_ENABLE_HUNYUAN=1을 설정하세요: https://github.com/Tencent-Hunyuan/Hunyuan3D-2/blob/main/LICENSE",
+    );
+  }
   const provider = PROVIDERS[id];
   if (!provider) {
     throw new Error(

@@ -3,6 +3,7 @@ import type { GenerateResult, Method, Resolution, State, Validation, Verdict } f
 
 export interface GenerateForm {
   method: Method;
+  hybridAi: boolean;
   resolution: Resolution;
   symmetry: boolean;
   smoothing: number;
@@ -161,7 +162,7 @@ export function renderGenerate(state: State, ui: PanelUi, actions: PanelActions)
     h("div", { class: "muted" }, "물체 종류"),
     kind(
       "캐릭터 · 인형 · 생물",
-      "AI(Hunyuan3D)가 볼·코·튀어나온 부품까지 형상을 만들고, 5면 실루엣이 크기와 외곽을 맞춥니다. 인터넷이 필요하고 30초~1분 걸립니다.",
+      "설정된 AI 공급자가 볼·코·튀어나온 부품까지 형상을 만들고, 5면 실루엣이 크기와 외곽을 맞춥니다. 기본 공급자는 TRELLIS이며 인터넷과 대기 시간이 필요합니다.",
       CHARACTER,
     ),
     kind(
@@ -178,6 +179,17 @@ export function renderGenerate(state: State, ui: PanelUi, actions: PanelActions)
       method("hybrid", "하이브리드 자동 선택"),
       method("geometry", "기본 형상 기반"),
       method("silhouette", "실루엣만"),
+      h(
+        "label",
+        { class: "field check", title: "네트워크 또는 로컬 GPU AI 공급자를 호출합니다. 라이선스·대기시간·사용량을 먼저 확인하세요." },
+        h("input", {
+          type: "checkbox",
+          checked: form.hybridAi,
+          disabled: ui.generating || form.method !== "hybrid",
+          onChange: (event: Event) => actions.updateForm({ hybridAi: (event.target as HTMLInputElement).checked }),
+        }),
+        h("span", {}, "하이브리드에 AI 후보 포함"),
+      ),
       h("label", { class: "field" }, h("span", {}, "해상도"), resolution),
       h("label", { class: "field" }, h("span", {}, "스무딩 반복 (실루엣만)"), smoothing),
       h(
