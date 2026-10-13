@@ -142,9 +142,10 @@ async function main(argv: string[]): Promise<number> {
         `${formatReport(result.report)}\n\n복원 결과 (해상도 ${result.resolution})\n` +
           `  삼각형 ${(result.mesh.indices.length / 3).toLocaleString()}개\n` +
           `  재투영 일치도 ${(result.score * 100).toFixed(1)}% — ${result.comparisons.map((c) => `${c.id} ${(c.iou * 100).toFixed(1)}%`).join(" · ")}\n` +
+          `  색 일치도 ${(result.colourScore * 100).toFixed(1)}% — ${result.comparisons.map((c) => `${c.id} ${(c.colour * 100).toFixed(1)}%`).join(" · ")}\n` +
           `  ${result.files.glb}\n  ${result.files.obj}\n  ${result.files.voxels}\n  재렌더: ${result.files.renders}\n`,
       );
-      await maybeWriteJson(values.json, { report: result.report, comparisons: result.comparisons, score: result.score });
+      await maybeWriteJson(values.json, { report: result.report, comparisons: result.comparisons, score: result.score, colourScore: result.colourScore });
       return result.report.verdict === "fail" ? 2 : 0;
     }
 

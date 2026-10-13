@@ -77,7 +77,7 @@ flowchart LR
 | `src/mesh/glb.ts`, `obj.ts` | GLB(법선·정점색) / OBJ 내보내기 |
 | `src/pipeline.ts` | `reconstructFromViews`(메인), `runFromViews`(선택: 생성형 공급자) |
 | `src/web/server.ts` | studio JSON API, 파일 서빙, 작업 직렬화 |
-| `cad/src/studio/` | 5면 입력 화면: 방향 마커, 중심선·bbox·외곽선, 회전/반전/보정, 품질 점수, 재투영 비교 |
+| `cad/src/studio/` | 5면 입력 화면: 방향 마커, 중심선·bbox·외곽선, 회전/반전/보정, 품질 점수, 재투영 비교(외곽 IoU + 색 일치도 + 색 충돌 렌더) |
 | `cad/src/viewer/` | 3D 뷰어: orbit, wireframe, flat/smooth, mesh↔voxel, bbox, XYZ gizmo, front/back/left/right/top 프리셋, 바닥 방향 표시 |
 
 ## 정렬 검증
@@ -94,6 +94,15 @@ flowchart LR
   - 원본 가장자리에서 잘린 피사체
   - 너무 작은 이미지(256px 미만)
   - 보정 후 캔버스 밖으로 나간 경우
+
+## 결과 검증: 외곽 일치도와 색 일치도
+
+결과 메시는 입력과 같은 px/unit으로 5방향 재렌더되어 두 가지로 채점된다.
+
+- **외곽 일치도 (IoU):** 입력 실루엣과 재렌더 실루엣의 겹침. 외곽선이 맞는지 본다.
+- **색 일치도 (photo-consistency):** 두 장 이상의 사진이 함께 정면으로 보는 표면점마다, 사진들이 그 점의 색에 동의하는지 본다. 밝기 차이(같은 흰 면의 음영)는 절반만 반영하고, 색상 차이(흰 얼굴 vs 분홍 꽃)는 그대로 반영한다(`colourDistance`). 동의하지 않는 점은 `result/<view>.conflict.png`에 빨갛게 표시된다.
+
+외곽 일치도가 높은데 색 일치도가 낮으면, 외곽선은 맞지만 형상 안쪽이 실제와 다르다는 뜻이다. 예: 키티의 꽃이 앞면·옆면·정수리에 따로 찍힘(외곽 96%, 색 78%). 정확한 형상(내장 데모 의자)은 둘 다 98~100%다.
 
 ## 왜 이전보다 깔끔한가
 

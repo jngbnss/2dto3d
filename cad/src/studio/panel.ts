@@ -202,7 +202,8 @@ export function renderResult(result: GenerateResult, stamp: number): HTMLElement
         "div",
         { class: "compare-name" },
         h("strong", {}, c.id),
-        h("span", { class: `iou tone-${grade(c.iou)}` }, `IoU ${(c.iou * 100).toFixed(1)}%`),
+        h("span", { class: `iou tone-${grade(c.iou)}` }, `외곽 ${(c.iou * 100).toFixed(1)}%`),
+        h("span", { class: `iou tone-${grade(c.colour)}` }, `색 ${(c.colour * 100).toFixed(1)}%`),
       ),
       h(
         "figure",
@@ -227,6 +228,12 @@ export function renderResult(result: GenerateResult, stamp: number): HTMLElement
         ),
         h("figcaption", {}, "겹쳐보기"),
       ),
+      h(
+        "figure",
+        {},
+        h("img", { src: bust(c.conflictUrl, stamp), alt: `${c.id} 색 충돌` }),
+        h("figcaption", {}, "색 충돌 (빨강)"),
+      ),
     ),
   );
 
@@ -242,10 +249,23 @@ export function renderResult(result: GenerateResult, stamp: number): HTMLElement
       h(
         "span",
         {},
-        "재투영 일치도 ",
+        "외곽 일치도 ",
         h("strong", { class: `tone-${grade(result.score)}` }, String(Math.round(result.score * 100))),
       ),
+      h(
+        "span",
+        {},
+        "색 일치도 ",
+        h("strong", { class: `tone-${grade(result.colourScore)}` }, String(Math.round(result.colourScore * 100))),
+      ),
     ),
+    result.colourScore < 0.9
+      ? h(
+          "p",
+          { class: "warn-note" },
+          "외곽선은 맞지만 사진들이 표면 색에 동의하지 않는 곳이 있습니다(빨강). 꽃·눈 같은 무늬가 여러 곳에 찍혔다면 형상 안쪽이 실제와 다릅니다 — 캐릭터는 'AI + 실루엣 보정' 방식을 쓰세요.",
+        )
+      : null,
     h(
       "div",
       { class: "result-links" },
@@ -254,7 +274,11 @@ export function renderResult(result: GenerateResult, stamp: number): HTMLElement
       h("a", { class: "btn-link", href: result.objUrl, download: "" }, "OBJ 내려받기"),
       h("a", { class: "btn-link", href: result.voxelUrl, download: "" }, "복셀 GLB"),
     ),
-    h("p", { class: "muted small" }, "겹쳐보기: 원본(50%) 위에 재렌더를 차이 합성 — 어긋난 부분이 밝게 보입니다."),
+    h(
+      "p",
+      { class: "muted small" },
+      "겹쳐보기: 원본(50%) 위에 재렌더를 차이 합성 — 어긋난 부분이 밝게 보입니다. 색 충돌: 두 사진이 같은 표면점을 다른 색으로 본 곳이 빨갛게 표시됩니다.",
+    ),
     h("div", { class: "compare" }, ...rows),
   );
 }

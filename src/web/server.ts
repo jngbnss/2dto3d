@@ -35,7 +35,8 @@ interface StoredResult {
   readonly triangles: number;
   readonly resolution: number;
   readonly score: number;
-  readonly comparisons: ReadonlyArray<{ readonly id: ViewId; readonly iou: number }>;
+  readonly colourScore: number;
+  readonly comparisons: ReadonlyArray<{ readonly id: ViewId; readonly iou: number; readonly colour: number }>;
 }
 
 /**
@@ -135,13 +136,14 @@ async function handle(request: IncomingMessage, response: ServerResponse, direct
     const file = isViewId(id) ? (await viewPathsFromDirectory(directory))[id] : undefined;
     return file ? sendFile(response, file, CONTENT_TYPES[extname(file).toLowerCase()] ?? "application/octet-stream") : notFound(response);
   }
-  const derived = /^\/(prepared|outline|result)\/([a-z]+)$/.exec(path);
+  const derived = /^\/(prepared|outline|result|conflict)\/([a-z]+)$/.exec(path);
   if (derived) {
     const [, kind, id = ""] = derived;
     if (!isViewId(id)) return notFound(response);
     const file =
       kind === "prepared" ? join(directory, "prepared", `${id}.png`)
       : kind === "outline" ? join(directory, "prepared", `${id}.outline.png`)
+      : kind === "conflict" ? join(directory, "result", `${id}.conflict.png`)
       : join(directory, "result", `${id}.png`);
     return sendFile(response, file, "image/png");
   }
@@ -210,6 +212,7 @@ async function generate(directory: string, body: unknown): Promise<unknown> {
     triangles: result.mesh.indices.length / 3,
     resolution: result.resolution,
     score: result.score,
+    colourScore: result.colourScore,
     comparisons: result.comparisons,
   };
   await writeFile(join(directory, RESULT_FILE), `${JSON.stringify(stored, null, 2)}\n`, "utf8");
@@ -256,6 +259,8 @@ async function state(directory: string): Promise<unknown> {
   try {
     const stored = JSON.parse(await readFile(join(directory, RESULT_FILE), "utf8")) as StoredResult;
     await stat(join(directory, "model.glb"));
+    // Results saved before colour agreement existed are rebuilt rather than shown half-empty.
+    if (typeof stored.colourScore !== "number") throw new Error("stale result");
     result = {
       glbUrl: `/model.glb?t=${stamp}`,
       objUrl: `/model.obj?t=${stamp}`,
@@ -263,11 +268,14 @@ async function state(directory: string): Promise<unknown> {
       triangles: stored.triangles,
       resolution: stored.resolution,
       score: stored.score,
+      colourScore: stored.colourScore,
       comparisons: stored.comparisons.map((c) => ({
         id: c.id,
         iou: c.iou,
+        colour: c.colour,
         originalUrl: `/prepared/${c.id}?t=${stamp}`,
         renderUrl: `/result/${c.id}?t=${stamp}`,
+        conflictUrl: `/conflict/${c.id}?t=${stamp}`,
       })),
     };
   } catch {

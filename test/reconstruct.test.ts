@@ -1,11 +1,13 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import sharp from "sharp";
 import { demoMesh } from "../src/mesh/primitives.ts";
 import { parseGlb } from "../src/mesh/index.ts";
 import { reconstructFromViews, renderToDirectory } from "../src/pipeline.ts";
+import { colourDistance } from "../src/reconstruct/finish.ts";
 import type { ViewPaths } from "../src/analyze/report.ts";
 
 const SIZE = 256;
@@ -63,4 +65,35 @@ test("building without the top view is refused", async (t) => {
     reconstructFromViews(partial, {}, { outputDirectory: directory, resolution: RESOLUTION }),
     /top/,
   );
+});
+
+test("views that agree on the surface score full colour agreement", async (t) => {
+  const { directory, paths } = await fixture();
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const result = await reconstructFromViews(paths, {}, { outputDirectory: directory, resolution: RESOLUTION });
+  assert.ok(result.colourScore > 0.95, `colour ${result.colourScore.toFixed(3)}`);
+});
+
+test("a view painted in different colours keeps its outline but loses colour agreement", async (t) => {
+  const { directory, paths } = await fixture();
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // Same silhouette, hue turned half way round: the left photo now disagrees with front, back and top.
+  const left = paths.left;
+  assert.ok(left);
+  await writeFile(left, await sharp(await readFile(left)).modulate({ hue: 180, saturation: 2 }).png().toBuffer());
+
+  const result = await reconstructFromViews(paths, {}, { outputDirectory: directory, resolution: RESOLUTION });
+  const leftView = result.comparisons.find((c) => c.id === "left");
+  assert.ok(leftView);
+  assert.ok(leftView.iou > 0.93, `left IoU ${leftView.iou.toFixed(3)}`);
+  assert.ok(leftView.colour < 0.6, `left colour ${leftView.colour.toFixed(3)}`);
+  assert.ok(result.colourScore < 0.9, `colour ${result.colourScore.toFixed(3)}`);
+});
+
+test("colour distance tolerates shading but not a change of colour", () => {
+  const white: [number, number, number] = [1, 1, 1];
+  assert.ok(colourDistance(white, [0.78, 0.78, 0.78]) <= 0.15, "a shaded white is still white");
+  assert.ok(colourDistance(white, [1, 0.41, 0.71]) > 0.15, "pink is not white");
+  assert.ok(colourDistance([0.35, 0.2, 0.15], white) > 0.15, "brown is not white");
 });

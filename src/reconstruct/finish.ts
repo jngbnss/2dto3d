@@ -36,6 +36,25 @@ const MIN_FACING = 0.3;
  */
 const FACING_POWER = 6;
 
+/** A view takes part in the consistency check only where it faces the surface at least this squarely. */
+const CONSISTENCY_FACING = 0.35;
+/** Colour distance (see `colourDistance`) above which two views disagree about a surface point. */
+const CONFLICT_DISTANCE = 0.15;
+
+export interface PhotoConsistency {
+  /** Share of surface seen by two or more views on which those views agree, 0..1. */
+  readonly score: number;
+  /** Per view: share of its jointly seen surface that agrees with the other views. */
+  readonly perView: ReadonlyMap<ViewId, number>;
+  /** 1 where the views disagree about the colour of that vertex. */
+  readonly conflicts: Uint8Array;
+}
+
+export interface PaintResult {
+  readonly mesh: Mesh;
+  readonly consistency: PhotoConsistency;
+}
+
 /**
  * Colours an untextured mesh from the input views, the way a game artist
  * projection-paints a model sheet: each vertex takes the colour of every view
@@ -47,6 +66,11 @@ const FACING_POWER = 6;
  * hides them. Vertices no view sees (top, bottom, cavities) take the colour of
  * their nearest painted neighbour across the surface.
  *
+ * The same samples measure photo-consistency: on the true surface, two photos
+ * that both see a point show it in the same colour. Where they disagree — a
+ * hair flower projected onto the face by one view and onto the crown by
+ * another — the geometry is not where the photos say the surface is.
+ *
  * `samples` supplies each view's silhouette (registration and mask); `colour`
  * supplies a higher-resolution raster of the same image to sample from.
  */
@@ -54,44 +78,114 @@ export function paintFromViews(
   input: Mesh,
   samples: ReadonlyMap<ViewId, ViewSample>,
   colour: ReadonlyMap<ViewId, Raster>,
-): Mesh {
+): PaintResult {
   const mesh = center(input);
   const vertexCount = mesh.positions.length / 3;
   const normals = vertexNormals(mesh);
-  const sum = new Float64Array(vertexCount * 3);
-  const weights = new Float64Array(vertexCount);
-
+  const views = new Map<ViewId, ViewSamples>();
   for (const [id, sample] of samples) {
     const raster = colour.get(id);
     const bbox = sample.silhouette.bbox;
     if (!raster || !bbox) continue;
-    paintView(mesh, normals, id, sample, raster, bbox, sum, weights);
+    const sampled = sampleView(mesh, normals, id, sample, raster, bbox);
+    if (sampled) views.set(id, sampled);
   }
 
   const colors = new Float32Array(vertexCount * 3);
   const painted = new Uint8Array(vertexCount);
   for (let v = 0; v < vertexCount; v++) {
-    const w = weights[v] ?? 0;
-    if (w <= 0) continue;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let weight = 0;
+    for (const view of views.values()) {
+      const facing = view.facing[v] ?? 0;
+      if (facing <= 0) continue;
+      const w = facing ** FACING_POWER;
+      r += (view.colour[v * 3] ?? 0) * w;
+      g += (view.colour[v * 3 + 1] ?? 0) * w;
+      b += (view.colour[v * 3 + 2] ?? 0) * w;
+      weight += w;
+    }
+    if (weight <= 0) continue;
     painted[v] = 1;
-    colors[v * 3] = (sum[v * 3] ?? 0) / w;
-    colors[v * 3 + 1] = (sum[v * 3 + 1] ?? 0) / w;
-    colors[v * 3 + 2] = (sum[v * 3 + 2] ?? 0) / w;
+    colors[v * 3] = r / weight;
+    colors[v * 3 + 1] = g / weight;
+    colors[v * 3 + 2] = b / weight;
   }
   floodUnpainted(mesh, colors, painted);
-  return { ...input, colors };
+  return { mesh: { ...input, colors }, consistency: photoConsistency(views, vertexCount) };
 }
 
-function paintView(
+interface ViewSamples {
+  /** RGB 0..1 per vertex; meaningful where `facing` > 0. */
+  readonly colour: Float32Array;
+  /** How squarely the vertex faces this view where it was sampled, else 0. */
+  readonly facing: Float32Array;
+}
+
+function photoConsistency(views: ReadonlyMap<ViewId, ViewSamples>, vertexCount: number): PhotoConsistency {
+  const conflicts = new Uint8Array(vertexCount);
+  const shared = new Map<ViewId, { seen: number; agreed: number }>([...views.keys()].map((id) => [id, { seen: 0, agreed: 0 }]));
+  const entries = [...views];
+  let jointly = 0;
+  let agreeing = 0;
+  const colourOf = (view: ViewSamples, v: number): [number, number, number] => [
+    view.colour[v * 3] ?? 0,
+    view.colour[v * 3 + 1] ?? 0,
+    view.colour[v * 3 + 2] ?? 0,
+  ];
+  for (let v = 0; v < vertexCount; v++) {
+    const seeing = entries.filter(([, view]) => (view.facing[v] ?? 0) >= CONSISTENCY_FACING);
+    if (seeing.length < 2) continue;
+    jointly++;
+    let conflict = false;
+    for (let i = 0; i < seeing.length && !conflict; i++) {
+      for (let j = i + 1; j < seeing.length && !conflict; j++) {
+        const a = seeing[i]?.[1];
+        const b = seeing[j]?.[1];
+        if (a && b && colourDistance(colourOf(a, v), colourOf(b, v)) > CONFLICT_DISTANCE) conflict = true;
+      }
+    }
+    if (conflict) conflicts[v] = 1;
+    else agreeing++;
+    for (const [id] of seeing) {
+      const tally = shared.get(id);
+      if (!tally) continue;
+      tally.seen++;
+      if (!conflict) tally.agreed++;
+    }
+  }
+  return {
+    score: jointly > 0 ? agreeing / jointly : 1,
+    perView: new Map([...shared].map(([id, t]) => [id, t.seen > 0 ? t.agreed / t.seen : 1])),
+    conflicts,
+  };
+}
+
+/**
+ * Perceptual-enough colour distance for comparing two photos of one surface:
+ * chroma counts fully, brightness half, because the same white surface is
+ * shaded differently in a front and a side render while a pink flower against a
+ * white face differs in chroma. Roughly 0 (same) .. 0.6 (opposite colours).
+ */
+export function colourDistance(a: readonly [number, number, number], b: readonly [number, number, number]): number {
+  const ya = 0.299 * a[0] + 0.587 * a[1] + 0.114 * a[2];
+  const yb = 0.299 * b[0] + 0.587 * b[1] + 0.114 * b[2];
+  const dy = (ya - yb) * 0.5;
+  const dcb = a[2] - ya - (b[2] - yb);
+  const dcr = a[0] - ya - (b[0] - yb);
+  return Math.hypot(dy, dcb, dcr);
+}
+
+function sampleView(
   mesh: Mesh,
   normals: Float32Array,
   id: ViewId,
   sample: ViewSample,
   raster: Raster,
   bbox: NonNullable<ViewSample["silhouette"]["bbox"]>,
-  sum: Float64Array,
-  weights: Float64Array,
-): void {
+): ViewSamples | null {
   const basis = BASES[id];
   const vertexCount = mesh.positions.length / 3;
   const u = new Float32Array(vertexCount);
@@ -115,7 +209,7 @@ function paintView(
     if (pv < vMin) vMin = pv;
     if (pv > vMax) vMax = pv;
   }
-  if (!(uMax > uMin) || !(vMax > vMin)) return;
+  if (!(uMax > uMin) || !(vMax > vMin)) return null;
 
   // Mesh projection box -> silhouette box, both as 0..1 fractions of the frame.
   const silhouette = sample.silhouette;
@@ -134,6 +228,8 @@ function paintView(
   // Two depth-buffer pixels of slack, in world units along the view axis.
   const tolerance = (2 * (uMax - uMin)) / ((fx1 - fx0) * VISIBILITY_SIZE);
   const facingAxis = [-basis.forward[0], -basis.forward[1], -basis.forward[2]] as const;
+  const colour = new Float32Array(vertexCount * 3);
+  const facingOut = new Float32Array(vertexCount);
 
   for (let i = 0; i < vertexCount; i++) {
     const facing =
@@ -156,12 +252,12 @@ function paintView(
     const cy = Math.min(raster.height - 1, Math.max(0, Math.floor(py * raster.height)));
     const p = (cy * raster.width + cx) * 4;
     if ((raster.data[p + 3] ?? 0) < 128) continue;
-    const w = facing ** FACING_POWER;
-    sum[i * 3] = (sum[i * 3] ?? 0) + ((raster.data[p] ?? 0) / 255) * w;
-    sum[i * 3 + 1] = (sum[i * 3 + 1] ?? 0) + ((raster.data[p + 1] ?? 0) / 255) * w;
-    sum[i * 3 + 2] = (sum[i * 3 + 2] ?? 0) + ((raster.data[p + 2] ?? 0) / 255) * w;
-    weights[i] = (weights[i] ?? 0) + w;
+    colour[i * 3] = (raster.data[p] ?? 0) / 255;
+    colour[i * 3 + 1] = (raster.data[p + 1] ?? 0) / 255;
+    colour[i * 3 + 2] = (raster.data[p + 2] ?? 0) / 255;
+    facingOut[i] = facing;
   }
+  return { colour, facing: facingOut };
 }
 
 /** Nearest surface depth per pixel of the view, smaller = closer to the camera. */

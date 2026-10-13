@@ -613,7 +613,7 @@ button.is-on {
 }
 .compare-row {
   display: grid;
-  grid-template-columns: 110px repeat(3, minmax(0, 220px));
+  grid-template-columns: 110px repeat(4, minmax(0, 200px));
   gap: 10px;
   align-items: start;
   padding-top: 10px;
@@ -667,13 +667,20 @@ button.is-on {
 }
 @media (max-width: 640px) {
   .compare-row {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .compare-name {
     grid-column: 1 / -1;
     flex-direction: row;
     gap: 10px;
   }
+}
+.warn-note {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--warn);
+  background: rgb(251 191 36 / 8%);
+  font-size: 13px;
 }
 
 /* toasts */

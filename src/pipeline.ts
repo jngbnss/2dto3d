@@ -39,13 +39,18 @@ export async function renderToDirectory(
   return writeRenders(renderViews(mesh, options), directory);
 }
 
-async function writeRenders(rendered: Readonly<Record<ViewId, RenderedView>>, directory: string): Promise<RenderResult> {
+/** Writes one PNG per view as `<id><suffix>.png`. */
+async function writeRenders(
+  rendered: Readonly<Record<ViewId, RenderedView>>,
+  directory: string,
+  suffix = "",
+): Promise<RenderResult> {
   await mkdir(directory, { recursive: true });
   const paths: ViewPaths = {};
   await Promise.all(
     VIEW_IDS.map(async (id) => {
       const view = rendered[id];
-      const path = join(directory, `${id}.png`);
+      const path = join(directory, `${id}${suffix}.png`);
       const png = await sharp(Buffer.from(view.pixels), {
         raw: { width: view.width, height: view.height, channels: 4 },
       })
@@ -104,15 +109,28 @@ export interface ReconstructOptions {
   readonly allowMissing?: boolean;
 }
 
+export interface ViewComparison {
+  readonly id: ViewId;
+  /** Input silhouette vs the result rendered back into this view. */
+  readonly iou: number;
+  /** Share of this view's jointly seen surface whose colour agrees with the other views. */
+  readonly colour: number;
+}
+
 export interface ReconstructResult {
   readonly report: ViewSetReport;
   readonly mesh: Mesh;
   readonly resolution: number;
   readonly files: { readonly glb: string; readonly obj: string; readonly voxels: string; readonly renders: string };
-  /** Per view: IoU of the input silhouette against the result rendered back into that view. */
-  readonly comparisons: ReadonlyArray<{ readonly id: ViewId; readonly iou: number }>;
-  /** Mean of `comparisons`. */
+  readonly comparisons: readonly ViewComparison[];
+  /** Mean silhouette IoU of `comparisons`. */
   readonly score: number;
+  /**
+   * Photo-consistency of the coloured surface, 0..1: where two photos see the
+   * same point, do they agree on its colour? Silhouettes can match perfectly
+   * while this is low — the outline is right but the surface inside is not.
+   */
+  readonly colourScore: number;
 }
 
 /**
@@ -145,8 +163,9 @@ export async function reconstructFromViews(
     maxDisplacement: field.cell * 0.6,
   });
   const rasters = new Map([...set.views].map(([id, view]) => [id, view.prepared] as const));
-  const mesh = paintFromViews(surface, set.views, rasters);
-  const voxels = paintFromViews(extractVoxels(field), set.views, rasters);
+  const painted = paintFromViews(surface, set.views, rasters);
+  const mesh = painted.mesh;
+  const voxels = paintFromViews(extractVoxels(field), set.views, rasters).mesh;
 
   const out = options.outputDirectory;
   await mkdir(out, { recursive: true });
@@ -165,12 +184,35 @@ export async function reconstructFromViews(
   const size = [...set.views.values()][0]?.silhouette.width ?? 512;
   const rendered = renderViews(mesh, { size, pixelsPerUnit: set.pixelsPerUnit });
   await writeRenders(rendered, files.renders);
+  await writeRenders(
+    renderViews(markConflicts(mesh, painted.consistency.conflicts), { size, pixelsPerUnit: set.pixelsPerUnit }),
+    files.renders,
+    ".conflict",
+  );
   const comparisons = [...set.views.values()].map((view) => ({
     id: view.id,
     iou: maskIoU(view.silhouette, rendered[view.id].pixels),
+    colour: painted.consistency.perView.get(view.id) ?? 1,
   }));
   const score = comparisons.reduce((sum, c) => sum + c.iou, 0) / Math.max(comparisons.length, 1);
-  return { report, mesh, resolution, files, comparisons, score };
+  return { report, mesh, resolution, files, comparisons, score, colourScore: painted.consistency.score };
+}
+
+/** The mesh in muted grey with every colour-conflict vertex in red, for the conflict renders. */
+function markConflicts(mesh: Mesh, conflicts: Uint8Array): Mesh {
+  const colors = new Float32Array(mesh.positions.length);
+  for (let v = 0; v < conflicts.length; v++) {
+    if (conflicts[v] === 1) {
+      colors.set([0.95, 0.15, 0.2], v * 3);
+      continue;
+    }
+    const r = mesh.colors[v * 3] ?? 0.8;
+    const g = mesh.colors[v * 3 + 1] ?? 0.8;
+    const b = mesh.colors[v * 3 + 2] ?? 0.8;
+    const grey = 0.45 + 0.4 * (0.299 * r + 0.587 * g + 0.114 * b);
+    colors.set([grey, grey, grey], v * 3);
+  }
+  return { ...mesh, colors };
 }
 
 export interface RunOptions extends RenderOptions {
@@ -247,7 +289,7 @@ function finishAsset(generated: GeneratedMesh, axes: readonly AxisEstimate[], se
   const facing = turn ? turnAround(authored) : authored;
   let mesh = scaleMesh(facing, proportionScale(facing.bounds, axes));
   if (mesh.colors.length === 0) {
-    mesh = paintFromViews(mesh, set.views, new Map([...set.views].map(([id, view]) => [id, view.prepared] as const)));
+    mesh = paintFromViews(mesh, set.views, new Map([...set.views].map(([id, view]) => [id, view.prepared] as const))).mesh;
   }
   return writeGlb(mesh);
 }

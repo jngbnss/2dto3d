@@ -70,7 +70,11 @@ export interface Comparison {
   id: string;
   originalUrl: string;
   renderUrl: string;
+  /** Result rendered grey with colour-conflict vertices in red. */
+  conflictUrl: string;
   iou: number;
+  /** 0..1 share of this view's jointly seen surface whose colour agrees with the other views. */
+  colour: number;
 }
 
 export interface GenerateResult {
@@ -81,6 +85,8 @@ export interface GenerateResult {
   resolution: number;
   /** 0..1 mean reprojection IoU. */
   score: number;
+  /** 0..1 photo-consistency: do the views agree on the surface's colour? */
+  colourScore: number;
   comparisons: Comparison[];
 }
 
