@@ -2,7 +2,7 @@ import { renderViews } from "../render/ortho.ts";
 import { BASES } from "../render/basis.ts";
 import { maskIoU } from "../validation.ts";
 import { computeBounds, type Mesh } from "../mesh/types.ts";
-import { adjacency, smoothWithinBand } from "./mesh-postprocess.ts";
+import { adjacency } from "./mesh-postprocess.ts";
 import { OPENING_RADIUS, openMask } from "./voxel-reconstruct.ts";
 import type { HullField } from "./voxel-reconstruct.ts";
 import type { Silhouette } from "../analyze/silhouette.ts";
@@ -154,6 +154,10 @@ const SPREAD_ITERATIONS = 24;
  * surface moves with it — a smooth dent instead of a flat cut — and only what
  * still overhangs after that is projected. Vertices well inside and far from
  * any overhang keep the generator's shape.
+ *
+ * There is deliberately no smoothing pass afterwards: the diffusion already
+ * leaves no seam, and smoothing bends thin parts (whiskers, antennae) that the
+ * generator modelled correctly.
  */
 export function correctToHull(mesh: Mesh, field: HullField): Mesh {
   const limit = -field.cell * OVERHANG_CELLS;
@@ -179,8 +183,7 @@ export function correctToHull(mesh: Mesh, field: HullField): Mesh {
   const moved = new Float32Array(mesh.positions.length);
   for (let i = 0; i < moved.length; i++) moved[i] = (mesh.positions[i] ?? 0) + (spread[i] ?? 0);
   const projected = projectOutside(moved, field, limit);
-  const smoothed = smoothWithinBand({ ...mesh, positions: projected, bounds: computeBounds(projected) }, 3, field.cell);
-  return { ...mesh, positions: smoothed.positions, bounds: smoothed.bounds };
+  return { ...mesh, positions: projected, bounds: computeBounds(projected) };
 }
 
 /** Moves points with field < `limit` up to `limit` along the normalised gradient (a few Newton steps). */

@@ -1,5 +1,6 @@
 import { BASES } from "../render/basis.ts";
 import { center, vertexNormals, type Bounds, type Mesh } from "../mesh/types.ts";
+import { adjacency } from "./mesh-postprocess.ts";
 import type { Raster } from "../analyze/raster.ts";
 import type { AxisEstimate, ViewSample } from "../analyze/types.ts";
 import type { ViewId } from "../views.ts";
@@ -94,6 +95,12 @@ export function paintFromViews(
     if (sampled) views.set(id, sampled);
   }
 
+  // Where the photos disagree, blending them prints every photo's version of a
+  // detail (three overlapping flowers). There, and in a small ring around it so
+  // no half-blended fringe remains, one photo paints: the one facing the surface
+  // most squarely.
+  const consistency = photoConsistency(views, vertexCount);
+  const exclusive = dilate(mesh, consistency.conflicts, EXCLUSIVE_RINGS);
   const colors = new Float32Array(vertexCount * 3);
   const painted = new Uint8Array(vertexCount);
   for (let v = 0; v < vertexCount; v++) {
@@ -101,23 +108,53 @@ export function paintFromViews(
     let g = 0;
     let b = 0;
     let weight = 0;
+    let best: ViewSamples | null = null;
+    let bestFacing = 0;
     for (const view of views.values()) {
       const facing = view.facing[v] ?? 0;
       if (facing <= 0) continue;
+      if (facing > bestFacing) {
+        bestFacing = facing;
+        best = view;
+      }
       const w = facing ** FACING_POWER;
       r += (view.colour[v * 3] ?? 0) * w;
       g += (view.colour[v * 3 + 1] ?? 0) * w;
       b += (view.colour[v * 3 + 2] ?? 0) * w;
       weight += w;
     }
-    if (weight <= 0) continue;
+    if (weight <= 0 || !best) continue;
     painted[v] = 1;
+    if (exclusive[v] === 1) {
+      colors[v * 3] = best.colour[v * 3] ?? 0;
+      colors[v * 3 + 1] = best.colour[v * 3 + 1] ?? 0;
+      colors[v * 3 + 2] = best.colour[v * 3 + 2] ?? 0;
+      continue;
+    }
     colors[v * 3] = r / weight;
     colors[v * 3 + 1] = g / weight;
     colors[v * 3 + 2] = b / weight;
   }
   floodUnpainted(mesh, colors, painted);
-  return { mesh: { ...input, colors }, consistency: photoConsistency(views, vertexCount) };
+  return { mesh: { ...input, colors }, consistency };
+}
+
+/** Edge rings around a colour conflict that are also painted by a single photo. */
+const EXCLUSIVE_RINGS = 2;
+
+/** Grows a vertex mask by `rings` steps across mesh edges. */
+function dilate(mesh: Mesh, mask: Uint8Array, rings: number): Uint8Array {
+  const { offsets, neighbours } = adjacency(mesh, mask.length);
+  let current = Uint8Array.from(mask);
+  for (let ring = 0; ring < rings; ring++) {
+    const next = Uint8Array.from(current);
+    for (let v = 0; v < current.length; v++) {
+      if (current[v] !== 1) continue;
+      for (let s = offsets[v] ?? 0; s < (offsets[v + 1] ?? 0); s++) next[neighbours[s] ?? 0] = 1;
+    }
+    current = next;
+  }
+  return current;
 }
 
 interface ViewSamples {
