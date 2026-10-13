@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
-import { demoMesh } from "../src/mesh/primitives.ts";
+import { boxMesh, demoMesh, mergeMeshes } from "../src/mesh/primitives.ts";
 import { parseGlb } from "../src/mesh/index.ts";
 import { reconstructFromViews, renderToDirectory } from "../src/pipeline.ts";
 import { colourDistance } from "../src/reconstruct/finish.ts";
@@ -33,6 +33,34 @@ test("the reconstructed mesh re-projects onto every input silhouette", async (t)
   const height = max[1] - min[1];
   assert.ok(Math.abs((max[0] - min[0]) / height - 1.0 / 2.2) < 0.03);
   assert.ok(Math.abs((max[2] - min[2]) / height - 1.1 / 2.2) < 0.03);
+});
+
+test("default reconstruction preserves a unilateral product feature", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "sixview-asymmetric-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = mergeMeshes([
+    boxMesh({ size: [0.7, 1.4, 0.7] }),
+    boxMesh({ size: [0.45, 0.28, 0.3], at: [0.52, 0.25, 0] }),
+  ]);
+  const paths = (await renderToDirectory(source, join(directory, "input"), { size: SIZE })).paths;
+
+  const normal = await reconstructFromViews(paths, {}, {
+    outputDirectory: join(directory, "normal"),
+    resolution: RESOLUTION,
+    smoothing: 0,
+  });
+  const forcedSymmetry = await reconstructFromViews(paths, {}, {
+    outputDirectory: join(directory, "symmetric"),
+    resolution: RESOLUTION,
+    smoothing: 0,
+    symmetry: true,
+  });
+
+  const front = normal.comparisons.find((view) => view.id === "front");
+  const symmetricFront = forcedSymmetry.comparisons.find((view) => view.id === "front");
+  assert.ok(front && symmetricFront);
+  assert.ok(front.iou > 0.96, `default front IoU ${front.iou.toFixed(3)}`);
+  assert.ok(front.iou > symmetricFront.iou + 0.08, `${front.iou.toFixed(3)} vs symmetric ${symmetricFront.iou.toFixed(3)}`);
 });
 
 test("the exported surface is closed: every edge is shared by exactly two triangles", async (t) => {

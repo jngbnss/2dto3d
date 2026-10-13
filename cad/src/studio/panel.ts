@@ -164,7 +164,11 @@ export function renderGenerate(state: State, ui: PanelUi, actions: PanelActions)
       "AI(Hunyuan3D)가 볼·코·튀어나온 부품까지 형상을 만들고, 5면 실루엣이 크기와 외곽을 맞춥니다. 인터넷이 필요하고 30초~1분 걸립니다.",
       CHARACTER,
     ),
-    kind("자동차 · 제품 · 기계", "실루엣 교집합을 그대로 쓰고 좌우 대칭으로 다듬습니다. 몇 초면 끝납니다.", PRODUCT),
+    kind(
+      "자동차 · 제품 · 기계",
+      "실루엣 교집합을 그대로 씁니다. 손잡이·레버처럼 비대칭 부품을 보존하기 위해 좌우 대칭 prior는 자동 적용하지 않습니다.",
+      PRODUCT,
+    ),
     h(
       "details",
       {},
@@ -190,7 +194,7 @@ export function renderGenerate(state: State, ui: PanelUi, actions: PanelActions)
           disabled: ui.generating,
           onChange: (event: Event) => actions.updateForm({ symmetry: (event.target as HTMLInputElement).checked }),
         }),
-        h("span", {}, "좌우 대칭 prior"),
+        h("span", {}, "좌우 대칭 prior (대칭 물체만)"),
       ),
     ),
     h(
@@ -212,10 +216,12 @@ type Preset = Pick<GenerateForm, "method" | "rounding" | "symmetry">;
 /**
  * Characters: generated shape corrected by the silhouettes, no mirror prior
  * (asymmetric parts such as a hair flower would be cut off by it); rounding
- * stays on for the silhouette fallback. Products: plain hull, mirrored.
+ * stays on for the silhouette fallback. Products also default to no mirror
+ * prior: handles, levers, ports, and other functional parts are often unilateral.
+ * Symmetry remains an explicit advanced option for known-symmetric subjects.
  */
 export const CHARACTER: Preset = { method: "ai", rounding: 1, symmetry: false };
-const PRODUCT: Preset = { method: "silhouette", rounding: 0, symmetry: true };
+export const PRODUCT: Preset = { method: "silhouette", rounding: 0, symmetry: false };
 
 export function renderResult(result: GenerateResult, stamp: number): HTMLElement {
   const rows = result.comparisons.map((c) =>
