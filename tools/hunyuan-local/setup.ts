@@ -8,9 +8,14 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { PYTHON, REPO, VENV } from "./paths.ts";
 
-/** Shape generation only; texture synthesis needs ~16 GB VRAM and compiled extensions. */
+/**
+ * Shape generation only; texture synthesis needs ~16 GB VRAM and compiled
+ * extensions. transformers 5 renamed the DINOv2 weights the Hunyuan checkpoint
+ * stores (load fails with missing `attention.q_proj` keys), so it stays on 4.x
+ * with the diffusers release that matches its huggingface_hub.
+ */
 const PACKAGES = [
-  "diffusers", "transformers", "accelerate", "huggingface_hub", "einops", "omegaconf", "tqdm",
+  "diffusers==0.31.0", "transformers==4.46.3", "accelerate", "huggingface_hub", "einops", "omegaconf", "tqdm",
   "opencv-python", "numpy", "scikit-image", "trimesh", "pygltflib", "pymeshlab",
 ];
 
