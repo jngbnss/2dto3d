@@ -17,15 +17,19 @@ import {
 import { renderViews, type RenderedView, type RenderOptions } from "./render/ortho.ts";
 import { analyzeViewSet, type ViewPaths } from "./analyze/report.ts";
 import { outlinePng, prepareViewSet, type PreparedSet } from "./preprocess.ts";
-import { maskIoU, validate } from "./validation.ts";
+import { validate } from "./validation.ts";
 import { buildHullField, DEFAULT_RESOLUTION } from "./reconstruct/voxel-reconstruct.ts";
+import { adviseResolution } from "./reconstruct/detail-resolution.ts";
 import { extractSurface, extractVoxels } from "./reconstruct/mesh-extract.ts";
+import { extractManifoldSurface } from "./reconstruct/manifold-extract.ts";
 import { postprocessMesh } from "./reconstruct/mesh-postprocess.ts";
 import { paintFromViews, proportionScale, type PhotoConsistency } from "./reconstruct/finish.ts";
 import { correctToHull, fitToViews, type Fit } from "./reconstruct/ai-correct.ts";
+import { bestGeometryCandidate, scoreSilhouetteFit } from "./reconstruct/geometry-reconstruct.ts";
 import type { Silhouette } from "./analyze/silhouette.ts";
 import type { ViewTransforms } from "./orientation.ts";
 import type { AxisEstimate, ViewSetReport } from "./analyze/types.ts";
+import { compareProjection, inspectMesh, type MeshQuality } from "./quality.ts";
 import {
   aiProvider,
   resolveProvider,
@@ -109,15 +113,19 @@ export async function writePrepared(set: PreparedSet, directory: string): Promis
  * - `ai`: an image-to-3D model supplies the shape (cheeks, nose, protruding
  *   parts), then the silhouettes correct it. Best for characters.
  */
-export type ReconstructMethod = "silhouette" | "ai";
+export type ReconstructMethod = "silhouette" | "geometry" | "ai" | "hybrid";
 
 export interface ReconstructOptions {
   readonly outputDirectory: string;
   readonly method?: ReconstructMethod;
   /** Image-to-3D provider for `method: "ai"`; defaults to the project default. */
   readonly provider?: string;
+  /** Include the configured AI provider as a hybrid candidate. May use network/GPU. */
+  readonly hybridAi?: boolean;
   /** Grid cells along the longest axis. */
   readonly resolution?: number;
+  /** Raise voxel resolution when silhouettes contain sub-four-cell joints. Default: true. */
+  readonly adaptiveResolution?: boolean;
   /** Intersect with the X-mirrored hull (left-right symmetric subjects). */
   readonly symmetry?: boolean;
   /** Rounded cross-section prior 0..1 (0 = plain hull, 1 = elliptical slices). `silhouette` only. */
@@ -133,6 +141,10 @@ export interface ViewComparison {
   readonly id: ViewId;
   /** Input silhouette vs the result rendered back into this view. */
   readonly iou: number;
+  readonly contourDistance: number;
+  readonly centerError: number;
+  readonly ratioError: number;
+  readonly colourMatch: number;
   /** Share of this view's jointly seen surface whose colour agrees with the other views. */
   readonly colour: number;
 }
@@ -141,6 +153,10 @@ export interface Evaluation {
   readonly comparisons: readonly ViewComparison[];
   /** Mean silhouette IoU of `comparisons`. */
   readonly score: number;
+  /** Composite reprojection shape score: IoU, contour, centre and ratio. */
+  readonly shapeScore: number;
+  /** Direct source-pixel versus rerender colour match. */
+  readonly textureScore: number;
   /**
    * Photo-consistency of the coloured surface, 0..1: where two photos see the
    * same point, do they agree on its colour? Silhouettes can match perfectly
@@ -152,9 +168,15 @@ export interface Evaluation {
 export interface ReconstructResult extends Evaluation {
   readonly report: ViewSetReport;
   readonly mesh: Mesh;
+  readonly meshQuality: MeshQuality;
   readonly resolution: number;
+  readonly requestedResolution: number;
+  readonly resolutionAdjusted: boolean;
+  readonly detailView?: ViewId;
   /** Method that produced `mesh` — `silhouette` when `ai` was asked for but the generator failed. */
   readonly method: ReconstructMethod;
+  /** Concrete candidate selected by geometry/hybrid reconstruction. */
+  readonly strategy?: string;
   /** Why the requested method could not be used, if it could not. */
   readonly warning?: string;
   /** For `ai`: the generated shape fitted to the views, before silhouette correction. */
@@ -181,9 +203,19 @@ export async function reconstructFromViews(
     throw new Error(`필수 뷰가 없습니다: ${missingRequired.join(", ")}. top 뷰 없이는 길이·폭·윗면 형상을 제한할 수 없습니다.`);
   }
 
-  const resolution = options.resolution ?? DEFAULT_RESOLUTION;
+  const requestedResolution = options.resolution ?? DEFAULT_RESOLUTION;
   const silhouettes = new Map([...set.views].map(([id, view]) => [id, view.silhouette] as const));
   const frame = { pixelsPerUnit: set.pixelsPerUnit, extent: set.alignment.extent };
+  const resolutionAdvice = options.adaptiveResolution === false
+    ? { requested: requestedResolution, resolution: requestedResolution, adjusted: false, thinRatio: 0 }
+    : adviseResolution(silhouettes, frame, requestedResolution);
+  const resolution = resolutionAdvice.resolution;
+  if (resolutionAdvice.adjusted) {
+    options.onProgress?.(
+      `얇은 접합부가 감지되어 해상도를 ${requestedResolution}에서 ${resolution}(으)로 자동 상향합니다` +
+        (resolutionAdvice.view ? ` (${resolutionAdvice.view})` : ""),
+    );
+  }
   const symmetryX = options.symmetry ?? false;
   const out = options.outputDirectory;
   await mkdir(out, { recursive: true });
@@ -191,11 +223,31 @@ export async function reconstructFromViews(
   const rasters = new Map([...set.views].map(([id, view]) => [id, view.prepared] as const));
 
   let method: ReconstructMethod = options.method ?? "silhouette";
+  let strategy: string | undefined;
   let warning: string | undefined;
   let generated: ReconstructResult["generated"];
   let surface: Mesh | null = null;
+  let usedManifoldExtractor = false;
   // The plain hull is the correction target for `ai` and the voxel export for both.
   const hull = buildHullField(silhouettes, frame, { resolution, symmetryX });
+  let silhouetteSurface: Mesh | null = null;
+  const getSilhouetteSurface = async (): Promise<Mesh> => {
+    if (silhouetteSurface) return silhouetteSurface;
+    const field = (options.rounding ?? 0) > 0
+      ? buildHullField(silhouettes, frame, { resolution, symmetryX, rounding: options.rounding ?? 0 })
+      : hull;
+    let extracted = extractSurface(field);
+    if (inspectMesh(extracted, 0).nonManifoldEdges > 0) {
+      options.onProgress?.("접합부 비다양체가 감지되어 Manifold level-set 추출기로 재생성합니다");
+      extracted = await extractManifoldSurface(field);
+      usedManifoldExtractor = true;
+    }
+    silhouetteSurface = postprocessMesh(extracted, {
+      iterations: options.smoothing ?? 12,
+      maxDisplacement: field.cell * 0.6,
+    });
+    return silhouetteSurface;
+  };
 
   if (method === "ai") {
     try {
@@ -212,13 +264,55 @@ export async function reconstructFromViews(
       options.onProgress?.(warning);
     }
   }
-  if (!surface) {
-    const field = (options.rounding ?? 0) > 0 ? buildHullField(silhouettes, frame, { resolution, symmetryX, rounding: options.rounding ?? 0 }) : hull;
-    surface = postprocessMesh(extractSurface(field), {
-      iterations: options.smoothing ?? 12,
-      maxDisplacement: field.cell * 0.6,
-    });
+  if (!surface && (method === "geometry" || method === "hybrid")) {
+    options.onProgress?.("기본 형상 후보 생성·다중 뷰 검증 중…");
+    const geometry = bestGeometryCandidate(silhouettes, frame);
+    const silhouette = await getSilhouetteSurface();
+    const silhouetteFit = scoreSilhouetteFit(silhouette, silhouettes, frame.pixelsPerUnit);
+    const geometryTrusted = geometry !== null && geometry.minimumViewScore >= 0.9;
+    if (method === "geometry") {
+      if (geometryTrusted && geometry.score >= 0.92) {
+        surface = geometry.mesh;
+        strategy = geometry.kind;
+      } else {
+        method = "silhouette";
+        strategy = "silhouette-fallback";
+        surface = silhouette;
+        warning = "기본 형상 후보가 모든 뷰를 충분히 설명하지 못해 실루엣 방식으로 처리했습니다.";
+      }
+    } else if (geometryTrusted && geometry.score >= silhouetteFit.score - 0.01) {
+      surface = geometry.mesh;
+      strategy = geometry.kind;
+    } else {
+      surface = silhouette;
+      strategy = "silhouette";
+    }
   }
+  if (method === "hybrid" && options.hybridAi) {
+    try {
+      const fitted = await generateFitted(set, silhouettes, frame, options);
+      const glb = join(out, "ai-raw.glb");
+      const raw = paintFromViews(fitted.mesh, set.views, rasters, set.pixelsPerUnit);
+      await writeFile(glb, writeGlb(raw.mesh));
+      generated = { ...evaluate(set, raw.mesh, raw.consistency), yaw: fitted.yaw, glb };
+      const corrected = correctToHull(fitted.mesh, hull);
+      const aiFit = scoreSilhouetteFit(corrected, silhouettes, frame.pixelsPerUnit);
+      const currentFit = scoreSilhouetteFit(surface ?? await getSilhouetteSurface(), silhouettes, frame.pixelsPerUnit);
+      if (aiFit.minimumViewScore >= 0.88 && aiFit.score >= currentFit.score - 0.03) {
+        surface = corrected;
+        strategy = "ai+silhouette";
+      }
+    } catch (error) {
+      warning = `하이브리드 AI 후보를 만들지 못해 로컬 후보만 비교했습니다: ${error instanceof Error ? error.message : String(error)}`;
+      options.onProgress?.(warning);
+    }
+  }
+  if (!surface) {
+    surface = await getSilhouetteSurface();
+  }
+  if (usedManifoldExtractor) strategy = strategy === undefined || strategy === "silhouette"
+    ? "silhouette+manifold-levelset"
+    : `${strategy}+manifold-levelset`;
 
   const painted = paintFromViews(surface, set.views, rasters, set.pixelsPerUnit);
   const mesh = painted.mesh;
@@ -244,8 +338,13 @@ export async function reconstructFromViews(
   return {
     report,
     mesh,
+    meshQuality: inspectMesh(mesh),
     resolution,
+    requestedResolution,
+    resolutionAdjusted: resolutionAdvice.adjusted,
+    ...(resolutionAdvice.view ? { detailView: resolutionAdvice.view } : {}),
     method,
+    ...(strategy ? { strategy } : {}),
     ...(warning ? { warning } : {}),
     ...(generated ? { generated } : {}),
     files,
@@ -277,13 +376,20 @@ async function generateFitted(
 function evaluate(set: PreparedSet, mesh: Mesh, consistency: PhotoConsistency): Evaluation {
   const size = [...set.views.values()][0]?.silhouette.width ?? 512;
   const rendered = renderViews(mesh, { size, pixelsPerUnit: set.pixelsPerUnit });
-  const comparisons = [...set.views.values()].map((view) => ({
-    id: view.id,
-    iou: maskIoU(view.silhouette, rendered[view.id].pixels),
-    colour: consistency.perView.get(view.id) ?? 1,
-  }));
+  const comparisons = [...set.views.values()].map((view) => {
+    const quality = compareProjection(view.silhouette, view.raster, rendered[view.id]);
+    return { id: view.id, ...quality, colour: consistency.perView.get(view.id) ?? 1 };
+  });
   const score = comparisons.reduce((sum, c) => sum + c.iou, 0) / Math.max(comparisons.length, 1);
-  return { comparisons, score, colourScore: consistency.score };
+  const mean = (key: "contourDistance" | "centerError" | "ratioError" | "colourMatch"): number =>
+    comparisons.reduce((sum, comparison) => sum + comparison[key], 0) / Math.max(comparisons.length, 1);
+  const clamp = (value: number): number => Math.max(0, Math.min(1, value));
+  const shapeScore =
+    score * 0.65 +
+    clamp(1 - mean("contourDistance") / 0.02) * 0.15 +
+    clamp(1 - mean("centerError") / 0.02) * 0.1 +
+    clamp(1 - mean("ratioError") / 0.05) * 0.1;
+  return { comparisons, score, shapeScore, textureScore: mean("colourMatch"), colourScore: consistency.score };
 }
 
 /** The mesh in muted grey with every colour-conflict vertex in red, for the conflict renders. */

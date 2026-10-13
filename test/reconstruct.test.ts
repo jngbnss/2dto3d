@@ -4,19 +4,91 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
-import { demoMesh } from "../src/mesh/primitives.ts";
+import { boxMesh, demoMesh, mergeMeshes } from "../src/mesh/primitives.ts";
 import { parseGlb } from "../src/mesh/index.ts";
 import { reconstructFromViews, renderToDirectory } from "../src/pipeline.ts";
 import { colourDistance } from "../src/reconstruct/finish.ts";
+import { ellipticCylinderMesh } from "../src/reconstruct/geometry-reconstruct.ts";
+import { adviseResolution } from "../src/reconstruct/detail-resolution.ts";
+import { extractManifoldSurface } from "../src/reconstruct/manifold-extract.ts";
+import { extractSurface } from "../src/reconstruct/mesh-extract.ts";
+import type { Silhouette } from "../src/analyze/silhouette.ts";
+import { inspectMesh } from "../src/quality.ts";
+import type { HullField } from "../src/reconstruct/voxel-reconstruct.ts";
 import type { ViewPaths } from "../src/analyze/report.ts";
 
 const SIZE = 256;
 const RESOLUTION = 96;
 
+test("thin joint evidence raises voxel resolution one bounded tier", () => {
+  const width = 128;
+  const height = 96;
+  const mask = new Uint8Array(width * height);
+  for (let y = 20; y < 76; y++) {
+    for (let x = 10; x < 48; x++) mask[y * width + x] = 1;
+    for (let x = 80; x < 118; x++) mask[y * width + x] = 1;
+  }
+  for (let y = 46; y < 50; y++) for (let x = 48; x < 80; x++) mask[y * width + x] = 1;
+  const area = mask.reduce((sum, value) => sum + value, 0);
+  const silhouette = { width, height, mask, area } as Silhouette;
+  const advice = adviseResolution(
+    new Map([["front", silhouette]]),
+    { pixelsPerUnit: 48, extent: { x: 2, y: 2, z: 1 } },
+    64,
+  );
+
+  assert.equal(advice.adjusted, true);
+  assert.equal(advice.resolution, 96);
+  assert.equal(advice.view, "front");
+});
+
+test("Manifold fallback resolves an ambiguous non-manifold level set", async () => {
+  const size = 6;
+  const values = new Float32Array(size ** 3).fill(-1);
+  for (const index of [49, 52, 55, 58, 64, 79, 82, 93, 116, 117, 118, 121, 122, 123, 124, 154, 157, 158, 160, 166]) {
+    values[index] = 1;
+  }
+  const field: HullField = {
+    nx: size,
+    ny: size,
+    nz: size,
+    origin: [0, 0, 0],
+    cell: 1,
+    values,
+    views: ["front"],
+  };
+
+  assert.ok(inspectMesh(extractSurface(field), 0).nonManifoldEdges > 0);
+  const repaired = inspectMesh(await extractManifoldSurface(field), 0);
+  assert.equal(repaired.boundaryEdges, 0);
+  assert.equal(repaired.nonManifoldEdges, 0);
+  assert.equal(repaired.degenerateTriangles, 0);
+});
+
 async function fixture(): Promise<{ directory: string; paths: ViewPaths }> {
   const directory = await mkdtemp(join(tmpdir(), "sixview-build-"));
   const render = await renderToDirectory(demoMesh(), directory, { size: SIZE });
   return { directory, paths: render.paths };
+}
+
+function connectedComponents(indices: Uint32Array, vertexCount: number): number {
+  const parent = Int32Array.from({ length: vertexCount }, (_, index) => index);
+  const find = (value: number): number => {
+    let root = value;
+    while ((parent[root] ?? root) !== root) root = parent[root] ?? root;
+    while (value !== root) {
+      const next = parent[value] ?? value;
+      parent[value] = root;
+      value = next;
+    }
+    return root;
+  };
+  for (let index = 0; index < indices.length; index += 3) {
+    const root = find(indices[index] ?? 0);
+    parent[find(indices[index + 1] ?? 0)] = root;
+    parent[find(indices[index + 2] ?? 0)] = root;
+  }
+  return new Set(Array.from({ length: vertexCount }, (_, index) => find(index))).size;
 }
 
 test("the reconstructed mesh re-projects onto every input silhouette", async (t) => {
@@ -33,6 +105,115 @@ test("the reconstructed mesh re-projects onto every input silhouette", async (t)
   const height = max[1] - min[1];
   assert.ok(Math.abs((max[0] - min[0]) / height - 1.0 / 2.2) < 0.03);
   assert.ok(Math.abs((max[2] - min[2]) / height - 1.1 / 2.2) < 0.03);
+});
+
+test("default reconstruction preserves a unilateral product feature", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "sixview-asymmetric-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = mergeMeshes([
+    boxMesh({ size: [0.7, 1.4, 0.7] }),
+    boxMesh({ size: [0.45, 0.28, 0.3], at: [0.52, 0.25, 0] }),
+  ]);
+  const paths = (await renderToDirectory(source, join(directory, "input"), { size: SIZE })).paths;
+
+  const normal = await reconstructFromViews(paths, {}, {
+    outputDirectory: join(directory, "normal"),
+    resolution: RESOLUTION,
+    smoothing: 0,
+  });
+  const forcedSymmetry = await reconstructFromViews(paths, {}, {
+    outputDirectory: join(directory, "symmetric"),
+    resolution: RESOLUTION,
+    smoothing: 0,
+    symmetry: true,
+  });
+
+  const front = normal.comparisons.find((view) => view.id === "front");
+  const symmetricFront = forcedSymmetry.comparisons.find((view) => view.id === "front");
+  assert.ok(front && symmetricFront);
+  assert.ok(front.iou > 0.96, `default front IoU ${front.iou.toFixed(3)}`);
+  assert.ok(front.iou > symmetricFront.iou + 0.08, `${front.iou.toFixed(3)} vs symmetric ${symmetricFront.iou.toFixed(3)}`);
+});
+
+test("a silhouette-confirmed small detached part is not removed", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "sixview-small-part-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = mergeMeshes([
+    boxMesh({ size: [0.9, 1.4, 0.8] }),
+    boxMesh({ size: [0.12, 0.12, 0.12], at: [0.7, 0.9, 0.62] }),
+  ]);
+  const paths = (await renderToDirectory(source, join(directory, "input"), { size: SIZE })).paths;
+
+  const result = await reconstructFromViews(paths, {}, {
+    outputDirectory: join(directory, "result"),
+    resolution: 128,
+    smoothing: 0,
+  });
+
+  assert.ok(connectedComponents(result.mesh.indices, result.mesh.positions.length / 3) >= 2);
+  assert.ok(result.score > 0.94, `mean IoU ${result.score.toFixed(3)}`);
+});
+
+test("a through-hole visible in opposite silhouettes stays open", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "sixview-hole-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = mergeMeshes([
+    boxMesh({ size: [1.2, 0.2, 0.4], at: [0, 0.7, 0] }),
+    boxMesh({ size: [1.2, 0.2, 0.4], at: [0, -0.7, 0] }),
+    boxMesh({ size: [0.2, 1.2, 0.4], at: [-0.5, 0, 0] }),
+    boxMesh({ size: [0.2, 1.2, 0.4], at: [0.5, 0, 0] }),
+  ]);
+  const paths = (await renderToDirectory(source, join(directory, "input"), { size: SIZE })).paths;
+
+  const result = await reconstructFromViews(paths, {}, {
+    outputDirectory: join(directory, "result"),
+    resolution: RESOLUTION,
+    smoothing: 0,
+  });
+  const front = await sharp(join(result.files.renders, "front.png")).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const centre = (Math.floor(front.info.height / 2) * front.info.width + Math.floor(front.info.width / 2)) * 4 + 3;
+
+  assert.equal(front.data[centre], 0, "front-view hole centre must remain transparent");
+  assert.ok((result.comparisons.find((view) => view.id === "front")?.iou ?? 0) > 0.96);
+});
+
+test("geometry reconstruction selects a multi-view verified cylinder", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "sixview-geometry-cylinder-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = ellipticCylinderMesh(0.45, 1.4, 0.35);
+  const paths = (await renderToDirectory(source, join(directory, "input"), { size: SIZE })).paths;
+
+  const result = await reconstructFromViews(paths, {}, {
+    outputDirectory: join(directory, "result"),
+    method: "geometry",
+    resolution: RESOLUTION,
+  });
+
+  assert.equal(result.method, "geometry", result.warning);
+  assert.equal(result.strategy, "elliptic-revolve");
+  assert.ok(result.score > 0.94, `geometry IoU ${result.score.toFixed(3)}`);
+});
+
+test("geometry reconstruction falls back for an unsupported asymmetric assembly", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "sixview-geometry-fallback-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = mergeMeshes([
+    boxMesh({ size: [0.7, 1.4, 0.7] }),
+    boxMesh({ size: [0.45, 0.28, 0.3], at: [0.52, 0.25, 0] }),
+  ]);
+  const paths = (await renderToDirectory(source, join(directory, "input"), { size: SIZE })).paths;
+
+  const result = await reconstructFromViews(paths, {}, {
+    outputDirectory: join(directory, "result"),
+    method: "geometry",
+    resolution: RESOLUTION,
+    smoothing: 0,
+  });
+
+  assert.equal(result.method, "silhouette");
+  assert.equal(result.strategy, "silhouette-fallback");
+  assert.match(result.warning ?? "", /실루엣/);
+  assert.ok(result.score > 0.96, `fallback IoU ${result.score.toFixed(3)}`);
 });
 
 test("the exported surface is closed: every edge is shared by exactly two triangles", async (t) => {
@@ -73,6 +254,21 @@ test("views that agree on the surface score full colour agreement", async (t) =>
 
   const result = await reconstructFromViews(paths, {}, { outputDirectory: directory, resolution: RESOLUTION });
   assert.ok(result.colourScore > 0.95, `colour ${result.colourScore.toFixed(3)}`);
+});
+
+test("view-wide exposure differences are normalised before colour projection", async (t) => {
+  const { directory, paths } = await fixture();
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const left = paths.left;
+  assert.ok(left);
+  await writeFile(left, await sharp(await readFile(left)).modulate({ brightness: 0.65 }).png().toBuffer());
+
+  const result = await reconstructFromViews(paths, {}, { outputDirectory: directory, resolution: RESOLUTION });
+  const leftView = result.comparisons.find((comparison) => comparison.id === "left");
+
+  assert.ok(leftView);
+  assert.ok(leftView.colour > 0.9, `left colour ${leftView.colour.toFixed(3)}`);
+  assert.ok(result.colourScore > 0.94, `colour ${result.colourScore.toFixed(3)}`);
 });
 
 test("a view painted in different colours keeps its outline but loses colour agreement", async (t) => {

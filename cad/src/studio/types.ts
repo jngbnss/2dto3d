@@ -73,11 +73,15 @@ export interface Comparison {
   /** Result rendered grey with colour-conflict vertices in red. */
   conflictUrl: string;
   iou: number;
+  contourDistance: number;
+  centerError: number;
+  ratioError: number;
+  colourMatch: number;
   /** 0..1 share of this view's jointly seen surface whose colour agrees with the other views. */
   colour: number;
 }
 
-export type Method = "silhouette" | "ai";
+export type Method = "silhouette" | "geometry" | "ai" | "hybrid";
 
 export interface GenerateResult {
   glbUrl: string;
@@ -85,16 +89,29 @@ export interface GenerateResult {
   voxelUrl: string;
   triangles: number;
   resolution: number;
+  requestedResolution: number;
+  resolutionAdjusted: boolean;
+  detailView: ViewId | null;
   /** Method that produced the mesh; `silhouette` when AI was asked for but failed. */
   method: Method;
+  strategy: string | null;
   /** Why the requested method was not used, if it was not. */
   warning: string | null;
   /** `ai` only: the generated shape fitted to the views, before silhouette correction. */
   generated: { score: number; colourScore: number; yaw: number; glbUrl: string } | null;
   /** 0..1 mean reprojection IoU. */
   score: number;
+  shapeScore: number;
+  textureScore: number;
   /** 0..1 photo-consistency: do the views agree on the surface's colour? */
   colourScore: number;
+  meshQuality: {
+    components: number;
+    boundaryEdges: number;
+    nonManifoldEdges: number;
+    degenerateTriangles: number;
+    selfIntersections: number | null;
+  };
   comparisons: Comparison[];
 }
 
@@ -112,6 +129,8 @@ export type Resolution = 96 | 128 | 160 | 192 | 256;
 export interface GenerateOptions {
   /** `ai`: generated shape corrected by the silhouettes (characters); `silhouette`: visual hull only. */
   method?: Method;
+  /** Hybrid mode only: call configured AI provider in addition to local candidates. */
+  hybridAi?: boolean;
   resolution?: Resolution;
   symmetry?: boolean;
   smoothing?: number;

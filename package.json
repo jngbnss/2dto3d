@@ -17,6 +17,7 @@
     "demo": "node src/cli.ts demo --out out",
     "serve": "node src/cli.ts serve --dir out",
     "test": "node --test test/*.test.ts",
+    "regression": "node tools/regression.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "cad:install": "npm --prefix cad install",
     "cad:build": "npm --prefix cad run build",
@@ -25,7 +26,8 @@
     "ai:local": "node tools/hunyuan-local/start.ts"
   },
   "dependencies": {
-    "sharp": "^0.34.4"
+    "manifold-3d": "^3.5.4",
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

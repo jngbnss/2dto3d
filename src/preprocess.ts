@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import sharp from "sharp";
+import sharp, { type OverlayOptions } from "sharp";
 import { VIEW_IDS, type ViewId } from "./views.ts";
 import { IDENTITY_TRANSFORM, type ViewTransform, type ViewTransforms } from "./orientation.ts";
 import { solveAlignment, type Alignment } from "./alignment.ts";
@@ -202,7 +202,7 @@ async function place(view: Oriented, canvasPixelsPerImagePixel: number): Promise
   const size = PREPARED_SIZE;
   const box = view.silhouette.bbox;
   const factor = canvasPixelsPerImagePixel * view.transform.scale;
-  const layers: sharp.OverlayOptions[] = [];
+  const layers: OverlayOptions[] = [];
   let clipped = 0;
 
   if (box && factor > 0) {

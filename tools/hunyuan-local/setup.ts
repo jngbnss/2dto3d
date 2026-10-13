@@ -8,6 +8,14 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { PYTHON, REPO, VENV } from "./paths.ts";
 
+if (process.env["SIXVIEW_ENABLE_HUNYUAN"] !== "1") {
+  throw new Error(
+    "설치 전 Hunyuan3D-2 공식 라이선스의 지역 제한을 확인하세요. " +
+    "적용 지역에서만 SIXVIEW_ENABLE_HUNYUAN=1을 설정한 뒤 다시 실행하세요: " +
+    "https://github.com/Tencent-Hunyuan/Hunyuan3D-2/blob/main/LICENSE",
+  );
+}
+
 /**
  * Shape generation only; texture synthesis needs ~16 GB VRAM and compiled
  * extensions. transformers 5 renamed the DINOv2 weights the Hunyuan checkpoint

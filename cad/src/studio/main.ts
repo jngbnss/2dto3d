@@ -18,7 +18,7 @@ const ui = {
   tuneOpen: new Set<ViewId>(),
   generating: false,
   loadingAll: false,
-  form: { resolution: 160, smoothing: 12, ...CHARACTER } as GenerateForm,
+  form: { resolution: 160, smoothing: 12, hybridAi: false, ...CHARACTER } as GenerateForm,
 };
 
 let current: State | null = null;
@@ -114,6 +114,16 @@ async function clearAll(): Promise<void> {
   }
 }
 
+async function autoAlign(): Promise<void> {
+  const ids = current?.views.filter((view) => view.hasImage).map((view) => view.id) ?? [];
+  for (const id of ids) ui.busy.add(id);
+  render(current);
+  const ok = await mutate(api.autoAlign);
+  for (const id of ids) ui.busy.delete(id);
+  render(current);
+  if (ok) toast("크기와 중심을 자동 보정했습니다.", "ok");
+}
+
 function renderHeader(state: State | null): HTMLElement {
   const busy = ui.loadingAll || ui.generating || ui.busy.size > 0;
   return h(
@@ -123,6 +133,17 @@ function renderHeader(state: State | null): HTMLElement {
     h("span", { class: "muted dir", title: state?.directory ?? "" }, state ? `데이터: ${state.directory}` : "불러오는 중…"),
     h("span", { class: "spacer" }),
     h("button", { type: "button", disabled: ui.loadingAll, onClick: () => void reload() }, "다시 불러오기"),
+    h(
+      "button",
+      {
+        type: "button",
+        class: "is-on",
+        title: "회전·반전·자르기는 유지하고, 각 뷰의 피사체 마스크에서 공통 XYZ 크기와 중심을 다시 계산합니다.",
+        disabled: busy || !state?.views.some((view) => view.hasImage),
+        onClick: () => void autoAlign(),
+      },
+      "크기·중심 자동 보정",
+    ),
     h(
       "button",
       {

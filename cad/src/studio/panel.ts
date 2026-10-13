@@ -3,6 +3,7 @@ import type { GenerateResult, Method, Resolution, State, Validation, Verdict } f
 
 export interface GenerateForm {
   method: Method;
+  hybridAi: boolean;
   resolution: Resolution;
   symmetry: boolean;
   smoothing: number;
@@ -161,17 +162,34 @@ export function renderGenerate(state: State, ui: PanelUi, actions: PanelActions)
     h("div", { class: "muted" }, "물체 종류"),
     kind(
       "캐릭터 · 인형 · 생물",
-      "AI(Hunyuan3D)가 볼·코·튀어나온 부품까지 형상을 만들고, 5면 실루엣이 크기와 외곽을 맞춥니다. 인터넷이 필요하고 30초~1분 걸립니다.",
+      "설정된 AI 공급자가 볼·코·튀어나온 부품까지 형상을 만들고, 5면 실루엣이 크기와 외곽을 맞춥니다. 기본 공급자는 TRELLIS이며 인터넷과 대기 시간이 필요합니다.",
       CHARACTER,
     ),
-    kind("자동차 · 제품 · 기계", "실루엣 교집합을 그대로 쓰고 좌우 대칭으로 다듬습니다. 몇 초면 끝납니다.", PRODUCT),
+    kind(
+      "자동차 · 제품 · 기계",
+      "실루엣과 기본 형상 후보를 모두 검증해 더 적합한 결과를 고릅니다. 손잡이·레버 같은 비대칭 부품을 위해 좌우 대칭 prior는 자동 적용하지 않습니다.",
+      PRODUCT,
+    ),
     h(
       "details",
       {},
       h("summary", {}, "고급 설정"),
       h("div", { class: "muted small" }, "생성 방식"),
       method("ai", "AI 형상 + 실루엣 보정"),
+      method("hybrid", "하이브리드 자동 선택"),
+      method("geometry", "기본 형상 기반"),
       method("silhouette", "실루엣만"),
+      h(
+        "label",
+        { class: "field check", title: "네트워크 또는 로컬 GPU AI 공급자를 호출합니다. 라이선스·대기시간·사용량을 먼저 확인하세요." },
+        h("input", {
+          type: "checkbox",
+          checked: form.hybridAi,
+          disabled: ui.generating || form.method !== "hybrid",
+          onChange: (event: Event) => actions.updateForm({ hybridAi: (event.target as HTMLInputElement).checked }),
+        }),
+        h("span", {}, "하이브리드에 AI 후보 포함"),
+      ),
       h("label", { class: "field" }, h("span", {}, "해상도"), resolution),
       h("label", { class: "field" }, h("span", {}, "스무딩 반복 (실루엣만)"), smoothing),
       h(
@@ -190,7 +208,7 @@ export function renderGenerate(state: State, ui: PanelUi, actions: PanelActions)
           disabled: ui.generating,
           onChange: (event: Event) => actions.updateForm({ symmetry: (event.target as HTMLInputElement).checked }),
         }),
-        h("span", {}, "좌우 대칭 prior"),
+        h("span", {}, "좌우 대칭 prior (대칭 물체만)"),
       ),
     ),
     h(
@@ -212,12 +230,20 @@ type Preset = Pick<GenerateForm, "method" | "rounding" | "symmetry">;
 /**
  * Characters: generated shape corrected by the silhouettes, no mirror prior
  * (asymmetric parts such as a hair flower would be cut off by it); rounding
- * stays on for the silhouette fallback. Products: plain hull, mirrored.
+ * stays on for the silhouette fallback. Products also default to no mirror
+ * prior: handles, levers, ports, and other functional parts are often unilateral.
+ * Symmetry remains an explicit advanced option for known-symmetric subjects.
  */
 export const CHARACTER: Preset = { method: "ai", rounding: 1, symmetry: false };
-const PRODUCT: Preset = { method: "silhouette", rounding: 0, symmetry: true };
+export const PRODUCT: Preset = { method: "hybrid", rounding: 0, symmetry: false };
 
 export function renderResult(result: GenerateResult, stamp: number): HTMLElement {
+  const methodLabel: Record<Method, string> = {
+    silhouette: "실루엣",
+    geometry: "기본 형상",
+    ai: "AI + 실루엣 보정",
+    hybrid: "하이브리드",
+  };
   const rows = result.comparisons.map((c) =>
     h(
       "div",
@@ -227,7 +253,9 @@ export function renderResult(result: GenerateResult, stamp: number): HTMLElement
         { class: "compare-name" },
         h("strong", {}, c.id),
         h("span", { class: `iou tone-${grade(c.iou)}` }, `외곽 ${(c.iou * 100).toFixed(1)}%`),
-        h("span", { class: `iou tone-${grade(c.colour)}` }, `색 ${(c.colour * 100).toFixed(1)}%`),
+        h("span", {}, `거리 ${(c.contourDistance * 100).toFixed(2)}%`),
+        h("span", {}, `중심 ${(c.centerError * 100).toFixed(2)}%`),
+        h("span", { class: `iou tone-${grade(c.colourMatch)}` }, `텍스처 ${(c.colourMatch * 100).toFixed(1)}%`),
       ),
       h(
         "figure",
@@ -268,21 +296,41 @@ export function renderResult(result: GenerateResult, stamp: number): HTMLElement
     h(
       "div",
       { class: "result-summary" },
-      h("span", {}, "방식 ", h("strong", {}, result.method === "ai" ? "AI + 실루엣 보정" : "실루엣")),
+      h("span", {}, "방식 ", h("strong", {}, methodLabel[result.method])),
+      result.strategy ? h("span", {}, "선택 ", h("strong", {}, result.strategy)) : null,
       h("span", {}, "삼각형 ", h("strong", {}, result.triangles.toLocaleString("ko-KR"))),
-      h("span", {}, "해상도 ", h("strong", {}, String(result.resolution))),
       h(
         "span",
         {},
-        "외곽 일치도 ",
-        h("strong", { class: `tone-${grade(result.score)}` }, String(Math.round(result.score * 100))),
+        "해상도 ",
+        h(
+          "strong",
+          {},
+          result.resolutionAdjusted
+            ? `${result.requestedResolution} → ${result.resolution} 자동 (${result.detailView ?? "얇은 구조"})`
+            : String(result.resolution),
+        ),
       ),
       h(
         "span",
         {},
-        "색 일치도 ",
-        h("strong", { class: `tone-${grade(result.colourScore)}` }, String(Math.round(result.colourScore * 100))),
+        "형상 점수 ",
+        h("strong", { class: `tone-${grade(result.shapeScore)}` }, String(Math.round(result.shapeScore * 100))),
       ),
+      h(
+        "span",
+        {},
+        "텍스처 점수 ",
+        h("strong", { class: `tone-${grade(result.textureScore)}` }, String(Math.round(result.textureScore * 100))),
+      ),
+      h("span", {}, "색 충돌 일관성 ", h("strong", { class: `tone-${grade(result.colourScore)}` }, String(Math.round(result.colourScore * 100)))),
+    ),
+    h(
+      "p",
+      { class: "muted small" },
+      `메시: 연결 성분 ${result.meshQuality.components} · 경계 엣지 ${result.meshQuality.boundaryEdges} · ` +
+        `비다양체 ${result.meshQuality.nonManifoldEdges} · 퇴화 삼각형 ${result.meshQuality.degenerateTriangles} · ` +
+        `자기교차 ${result.meshQuality.selfIntersections === null ? "검사 한도 초과" : result.meshQuality.selfIntersections}`,
     ),
     result.warning ? h("p", { class: "warn-note" }, result.warning) : null,
     result.generated

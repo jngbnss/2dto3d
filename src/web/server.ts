@@ -3,11 +3,12 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import sharp from "sharp";
 import { VIEWS, VIEW_IDS, imageAxes, isViewId, type ViewId } from "../views.ts";
-import { loadTransforms, saveTransforms, updateTransform, type ViewTransform } from "../orientation.ts";
+import { loadTransforms, restoreAutomaticPlacement, saveTransforms, updateTransform, type ViewTransform } from "../orientation.ts";
 import { prepareViewSet } from "../preprocess.ts";
 import { validate } from "../validation.ts";
 import { reconstructFromViews, viewPathsFromDirectory, writePrepared, type ReconstructMethod } from "../pipeline.ts";
 import type { ViewSetReport } from "../analyze/types.ts";
+import type { MeshQuality } from "../quality.ts";
 import { handleCadRequest } from "./cad.ts";
 
 export interface ServerOptions {
@@ -34,11 +35,26 @@ const RESULT_FILE = "result.json";
 interface StoredResult {
   readonly triangles: number;
   readonly resolution: number;
+  readonly requestedResolution?: number;
+  readonly resolutionAdjusted?: boolean;
+  readonly detailView?: ViewId | null;
   readonly method: ReconstructMethod;
+  readonly strategy?: string;
   readonly warning?: string;
   readonly score: number;
+  readonly shapeScore: number;
+  readonly textureScore: number;
   readonly colourScore: number;
-  readonly comparisons: ReadonlyArray<{ readonly id: ViewId; readonly iou: number; readonly colour: number }>;
+  readonly meshQuality: MeshQuality;
+  readonly comparisons: ReadonlyArray<{
+    readonly id: ViewId;
+    readonly iou: number;
+    readonly contourDistance: number;
+    readonly centerError: number;
+    readonly ratioError: number;
+    readonly colourMatch: number;
+    readonly colour: number;
+  }>;
   /** `ai` only: the generated shape fitted to the views, before silhouette correction. */
   readonly generated?: { readonly score: number; readonly colourScore: number; readonly yaw: number };
 }
@@ -129,6 +145,21 @@ async function handle(request: IncomingMessage, response: ServerResponse, direct
     );
   }
 
+  if (path === "/api/auto-align" && post) {
+    return json(
+      response,
+      await serial(async () => {
+        const transforms = await loadTransforms(directory);
+        await saveTransforms(
+          directory,
+          Object.fromEntries(VIEW_IDS.map((id) => [id, restoreAutomaticPlacement(transforms[id])])) as Record<ViewId, ViewTransform>,
+        );
+        await rm(join(directory, RESULT_FILE), { force: true });
+        return state(directory);
+      }),
+    );
+  }
+
   if (path === "/api/generate" && post) {
     const options = parseJson(await readBody(request));
     return json(response, await serial(() => generate(directory, options)));
@@ -212,21 +243,31 @@ async function generate(directory: string, body: unknown): Promise<unknown> {
 
   const result = await reconstructFromViews(paths, await loadTransforms(directory), {
     outputDirectory: directory,
-    method: options["method"] === "ai" ? "ai" : "silhouette",
+    method: options["method"] === "ai" || options["method"] === "geometry" || options["method"] === "hybrid"
+      ? options["method"]
+      : "silhouette",
     ...(resolution === undefined ? {} : { resolution }),
     ...(smoothing === undefined ? {} : { smoothing }),
     symmetry: options["symmetry"] === true,
+    hybridAi: options["hybridAi"] === true,
     rounding: typeof options["rounding"] === "number" ? Math.min(1, Math.max(0, options["rounding"])) : 0,
     onProgress: (message) => process.stdout.write(`· ${message}\n`),
   });
-  if (result.method !== "ai") await rm(join(directory, "ai-raw.glb"), { force: true });
+  if (!result.generated) await rm(join(directory, "ai-raw.glb"), { force: true });
   const stored: StoredResult = {
     triangles: result.mesh.indices.length / 3,
     resolution: result.resolution,
+    requestedResolution: result.requestedResolution,
+    resolutionAdjusted: result.resolutionAdjusted,
+    detailView: result.detailView ?? null,
     method: result.method,
+    ...(result.strategy ? { strategy: result.strategy } : {}),
     ...(result.warning ? { warning: result.warning } : {}),
     score: result.score,
+    shapeScore: result.shapeScore,
+    textureScore: result.textureScore,
     colourScore: result.colourScore,
+    meshQuality: result.meshQuality,
     comparisons: result.comparisons,
     ...(result.generated
       ? { generated: { score: result.generated.score, colourScore: result.generated.colourScore, yaw: result.generated.yaw } }
@@ -277,21 +318,32 @@ async function state(directory: string): Promise<unknown> {
     const stored = JSON.parse(await readFile(join(directory, RESULT_FILE), "utf8")) as StoredResult;
     await stat(join(directory, "model.glb"));
     // Results saved before colour agreement existed are rebuilt rather than shown half-empty.
-    if (typeof stored.colourScore !== "number") throw new Error("stale result");
+    if (typeof stored.colourScore !== "number" || typeof stored.shapeScore !== "number" || typeof stored.textureScore !== "number") throw new Error("stale result");
     result = {
       glbUrl: `/model.glb?t=${stamp}`,
       objUrl: `/model.obj?t=${stamp}`,
       voxelUrl: `/voxels.glb?t=${stamp}`,
       triangles: stored.triangles,
       resolution: stored.resolution,
+      requestedResolution: stored.requestedResolution ?? stored.resolution,
+      resolutionAdjusted: stored.resolutionAdjusted ?? false,
+      detailView: stored.detailView ?? null,
       method: stored.method ?? "silhouette",
+      strategy: stored.strategy ?? null,
       warning: stored.warning ?? null,
       generated: stored.generated ? { ...stored.generated, glbUrl: `/ai-raw.glb?t=${stamp}` } : null,
       score: stored.score,
+      shapeScore: stored.shapeScore,
+      textureScore: stored.textureScore,
       colourScore: stored.colourScore,
+      meshQuality: stored.meshQuality,
       comparisons: stored.comparisons.map((c) => ({
         id: c.id,
         iou: c.iou,
+        contourDistance: c.contourDistance,
+        centerError: c.centerError,
+        ratioError: c.ratioError,
+        colourMatch: c.colourMatch,
         colour: c.colour,
         originalUrl: `/prepared/${c.id}?t=${stamp}`,
         renderUrl: `/result/${c.id}?t=${stamp}`,

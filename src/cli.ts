@@ -2,9 +2,11 @@
 import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { stat, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { VIEW_IDS } from "./views.ts";
 import { demoMesh } from "./mesh/primitives.ts";
+import { writeGlb } from "./mesh/index.ts";
+import { syntheticFixtures } from "./synthetic.ts";
 import { analyzeViewSet, formatReport, type ViewPaths } from "./analyze/report.ts";
 import { loadTransforms } from "./orientation.ts";
 import {
@@ -22,10 +24,11 @@ const USAGE = `sixview — front/back/left/right/top 5면 정투영 이미지로
 사용법
   sixview serve   [--dir <dir>] [--port <n>]   5면 업로드·방향/정렬 보정·검증·3D 생성 + /viewer
   sixview analyze <dir> | --front a.png … --top e.png [--json <file>]   정렬 품질만 검사
-  sixview build   <dir> | --front a.png … --top e.png [--out <dir>] [--method silhouette|ai] [--res <n>] [--symmetry] [--rounding <0..1>] [--smoothing <n>]
-                  silhouette: 실루엣 교집합 → 매끈한 메시 / ai: AI 형상(Hunyuan) → 5면 실루엣 보정
+  sixview build   <dir> | --front a.png … --top e.png [--out <dir>] [--method silhouette|geometry|ai|hybrid] [--res <n>] [--symmetry] [--rounding <0..1>] [--smoothing <n>]
+                  silhouette: 실루엣 교집합 / geometry: 기본 형상 후보 / ai: AI 형상 / hybrid: 후보 자동 선택
                   → <out>/model.glb, model.obj, voxels.glb, result/*.png (ai는 ai-raw.glb도)
   sixview demo    [--out <dir>] [--size <px>]   샘플 형상을 5면으로 렌더 (테스트용 입력)
+  sixview synthetic [--out <dir>] [--size <px>] 구·원통·컵 손잡이·구멍 상자·비대칭 GT 세트 생성
   sixview render  <mesh.glb|obj> [--out <dir>] [--size <px>]
   sixview run     <dir> | --front a.png … [--provider <${Object.keys(PROVIDERS).join("|")}>] [--model <id>] [--out <dir>]
                   (선택) 생성형 모델로 3D 생성 → 입력 비율 보정·색 입히기
@@ -35,7 +38,7 @@ const USAGE = `sixview — front/back/left/right/top 5면 정투영 이미지로
 옵션
   --out        결과 디렉터리 (기본 ./out, build는 기본 <dir>)
   --size       렌더 해상도, 정사각 픽셀 (기본 512)
-  --method     build 방식: silhouette(기본, 자동차·제품) | ai(캐릭터, 인터넷 필요)
+  --method     build 방식: silhouette | geometry | ai(인터넷 필요) | hybrid(기본 후보 자동 선택)
   --res        복원 격자 해상도, 가장 긴 축 기준 (기본 160)
   --symmetry   좌우 대칭 prior (자동차 등)
   --rounding   곡면 보정 0~1: 수평 단면을 타원으로 깎아 대각선 모서리를 둥글게 (캐릭터 0.8~1, 자동차 0)
@@ -98,6 +101,17 @@ async function main(argv: string[]): Promise<number> {
       return report.verdict === "fail" ? 2 : 0;
     }
 
+    case "synthetic": {
+      await mkdir(outDirectory, { recursive: true });
+      for (const [id, mesh] of Object.entries(syntheticFixtures())) {
+        const directory = resolve(outDirectory, id);
+        await renderToDirectory(mesh, directory, renderOptions);
+        await writeFile(resolve(directory, "truth.glb"), writeGlb(mesh));
+        process.stdout.write(`${id}: ${directory}\n`);
+      }
+      return 0;
+    }
+
     case "render": {
       const meshPath = positionals[1];
       if (!meshPath) throw new Error("메시 경로가 필요합니다: sixview render <mesh.glb>");
@@ -135,7 +149,9 @@ async function main(argv: string[]): Promise<number> {
       }
       const smoothing = values.smoothing === undefined ? undefined : Number.parseInt(values.smoothing, 10);
       const method = values.method ?? "silhouette";
-      if (method !== "silhouette" && method !== "ai") throw new Error("--method는 silhouette 또는 ai입니다.");
+      if (method !== "silhouette" && method !== "geometry" && method !== "ai" && method !== "hybrid") {
+        throw new Error("--method는 silhouette, geometry, ai 또는 hybrid입니다.");
+      }
       const result = await reconstructFromViews(paths, directory ? await loadTransforms(resolve(directory)) : {}, {
         outputDirectory: values.out ? outDirectory : resolve(directory ?? "out"),
         method,
@@ -146,13 +162,18 @@ async function main(argv: string[]): Promise<number> {
         rounding: values.rounding === undefined ? 0 : Math.min(1, Math.max(0, Number.parseFloat(values.rounding) || 0)),
         onProgress: (message: string) => process.stderr.write(`· ${message}\n`),
       });
-      const scores = (label: string, e: { score: number; colourScore: number; comparisons: ReadonlyArray<{ id: string; iou: number; colour: number }> }): string =>
-        `  ${label} 외곽 ${(e.score * 100).toFixed(1)}% · 색 ${(e.colourScore * 100).toFixed(1)}% — ` +
+      const scores = (label: string, e: { score: number; shapeScore?: number; textureScore?: number; colourScore: number; comparisons: ReadonlyArray<{ id: string; iou: number; colour: number }> }): string =>
+        `  ${label} 외곽 ${(e.score * 100).toFixed(1)}%` +
+        (e.shapeScore === undefined ? "" : ` · 형상 ${(e.shapeScore * 100).toFixed(1)}%`) +
+        (e.textureScore === undefined ? "" : ` · 텍스처 ${(e.textureScore * 100).toFixed(1)}%`) +
+        ` · 색 충돌 일관성 ${(e.colourScore * 100).toFixed(1)}% — ` +
         e.comparisons.map((c) => `${c.id} ${(c.iou * 100).toFixed(0)}/${(c.colour * 100).toFixed(0)}`).join(" · ");
       process.stdout.write(
         `${formatReport(result.report)}\n\n복원 결과 (${result.method}, 해상도 ${result.resolution})\n` +
+          (result.strategy ? `  선택 후보 ${result.strategy}\n` : "") +
           (result.warning ? `  [경고] ${result.warning}\n` : "") +
           `  삼각형 ${(result.mesh.indices.length / 3).toLocaleString()}개\n` +
+          `  메시 연결성 ${result.meshQuality.components}개 · 경계 ${result.meshQuality.boundaryEdges} · 비다양체 ${result.meshQuality.nonManifoldEdges} · 자기교차 ${result.meshQuality.selfIntersections ?? "검사 한도 초과"}\n` +
           (result.generated ? `${scores(`AI 원본(회전 ${result.generated.yaw}°)`, result.generated)}\n` : "") +
           `${scores("결과", result)}\n` +
           `  ${result.files.glb}\n  ${result.files.obj}\n  ${result.files.voxels}\n  재렌더: ${result.files.renders}\n`,
@@ -160,9 +181,18 @@ async function main(argv: string[]): Promise<number> {
       await maybeWriteJson(values.json, {
         report: result.report,
         method: result.method,
+        strategy: result.strategy ?? null,
+        resolution: result.resolution,
+        requestedResolution: result.requestedResolution,
+        resolutionAdjusted: result.resolutionAdjusted,
+        detailView: result.detailView ?? null,
         comparisons: result.comparisons,
         score: result.score,
+        shapeScore: result.shapeScore,
+        textureScore: result.textureScore,
         colourScore: result.colourScore,
+        meshQuality: result.meshQuality,
+        triangles: result.mesh.indices.length / 3,
         ...(result.generated ? { generated: result.generated } : {}),
       });
       return result.report.verdict === "fail" ? 2 : 0;

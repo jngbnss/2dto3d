@@ -52,7 +52,7 @@ flowchart LR
   E --> F{validation<br/>정렬 품질}
   F -->|통과/검토| G[signed distance<br/>visual hull]
   G --> H[Surface Nets]
-  H --> I[작은 덩어리 제거<br/>밴드 제한 Taubin]
+  H --> I[실루엣 확인 성분 보존<br/>밴드 제한 Taubin]
   I --> J[뷰 색 투영]
   J --> K[model.glb / model.obj / voxels.glb]
   K --> L[5방향 재렌더<br/>원본과 IoU 비교]
@@ -70,8 +70,10 @@ flowchart LR
 | `src/analyze/silhouette.ts` | alpha 또는 테두리 flood-fill 배경 키잉으로 실루엣 추출, bbox·덩어리 수 |
 | `src/validation.ts` | 정렬 품질 점수: 축 비율 일관성, 뷰 일치도(거친 hull 재투영), 중심 정렬(축별 1D 점유 구간), 실루엣 대칭, 입력 상태 |
 | `src/reconstruct/voxel-reconstruct.ts` | 뷰별 2D signed distance(정확한 EDT)의 최솟값으로 만든 hull 거리장, 좌우 대칭 prior, 곡면 보정(수평 단면을 front 폭 × side 깊이에 내접하는 타원으로 제한 — 웹의 "캐릭터" 선택 시 1, "자동차·제품" 선택 시 0) |
-| `src/reconstruct/mesh-extract.ts` | Surface Nets(거리장 영점 보간) 메시, 복셀 메시 |
-| `src/reconstruct/mesh-postprocess.ts` | 작은 연결 성분 제거, 변위를 셀 0.6배로 제한한 Taubin 스무딩 |
+| `src/reconstruct/mesh-extract.ts` | 빠른 Surface Nets(거리장 영점 보간) 메시, 복셀 메시 |
+| `src/reconstruct/manifold-extract.ts` | Surface Nets 접합부가 비다양체일 때 Apache-2.0 Manifold level-set으로 안전 재추출 |
+| `src/reconstruct/detail-resolution.ts` | 약 4 voxel보다 가는 접합부를 마스크에서 감지해 해상도를 한 단계 자동 상향 |
+| `src/reconstruct/mesh-postprocess.ts` | 실루엣이 확인한 연결 성분을 보존하고, 변위를 셀 0.6배로 제한한 Taubin 스무딩 |
 | `src/reconstruct/finish.ts` | 깊이 테스트를 거친 다중 뷰 색 투영, 보이지 않는 면 채우기, (생성형 경로) 비율 보정 |
 | `src/render/ortho.ts` | 정투영 래스터라이저. `pixelsPerUnit`를 주면 prepared 캔버스와 픽셀 단위로 정렬된다 |
 | `src/mesh/glb.ts`, `obj.ts` | GLB(법선·정점색) / OBJ 내보내기 |
@@ -105,14 +107,16 @@ flowchart LR
 
 외곽 일치도가 높은데 색 일치도가 낮으면, 외곽선은 맞지만 형상 안쪽이 실제와 다르다는 뜻이다. 예: 키티의 꽃이 앞면·옆면·정수리에 따로 찍힘(외곽 96%, 색 78%). 정확한 형상(내장 데모 의자)은 둘 다 98~100%다.
 
-## 생성 방식: 실루엣 vs AI + 실루엣 보정
+## 생성 방식
 
 | 방식 | 언제 | 무엇을 하나 |
 |---|---|---|
-| `silhouette` (웹: 자동차·제품) | 외곽선이 곧 형상인 물체 | 위의 hull 거리장 → Surface Nets → 스무딩. 몇 초, 오프라인 |
-| `ai` (웹: 캐릭터, 기본) | 볼·코·튀어나온 부품처럼 외곽선 안쪽에 형상이 있는 물체 | 정렬된 front/back/left/right를 Hunyuan3D-2mv에 보내 형상을 받고 → `fitToViews`: 4방향 회전 중 실루엣이 가장 잘 맞는 방향 선택, 축별 크기·위치를 열림 연산(수염 같은 가는 부분 제외)한 외곽선 폭에 맞춤 → `correctToHull`: 5면 hull 밖으로 2.5셀 넘게 나간 부분의 변위를 표면 전체로 확산시켜 부드럽게 밀어 넣음(평평한 단면 없이) → 뷰 색 투영 |
+| `silhouette` | 외곽선이 곧 형상인 물체 | hull 거리장 → Surface Nets → 스무딩. 몇 초, 오프라인 |
+| `geometry` | 상자·원통·회전체 | 상자와 수직 타원 회전체 후보를 만들고 5뷰로 검증. 기준 미달이면 실루엣으로 복귀 |
+| `ai` | 외곽선 안쪽 형상이 중요한 물체 | 설정된 AI 공급자(기본 TRELLIS)의 메시를 5면에 맞추고 hull 밖 돌출을 보정. 실패 시 경고와 함께 실루엣 복귀 |
+| `hybrid` | 자동 선택 | 실루엣과 기하 후보를 같은 재투영 점수로 비교. 사용자가 AI 후보 포함을 켜면 AI도 비교 |
 
-`ai`는 인터넷과 HF Space가 필요하며 30초~1분 걸린다. 실패하면 자동으로 `silhouette`로 만들고 경고를 남긴다. 보정 전 형상은 `ai-raw.glb`로 함께 저장되어, 결과 화면과 뷰어에서 보정 전/후를 비교할 수 있다.
+AI 공급자별 라이선스·환경·GPU 요구사항은 `docs/AI_PROVIDERS.md`에 분리해 기록한다. 실패하면 AI를 사용한 것처럼 표시하지 않고 경고와 실제 선택 방식을 남긴다.
 
 키티 샘플(5면, 160): 실루엣 외곽 96 · 색 78 → AI 원본 외곽 91 · 색 82 → 보정 후 외곽 92 · 색 81. 외곽은 실루엣 방식이 가장 정확하고, 볼·코·꽃 같은 입체는 AI 방식만 만든다.
 
@@ -138,6 +142,7 @@ flowchart LR
 
 ```bash
 node src/cli.ts demo --out samples/demo     # 내장 형상을 5방향으로 정확히 렌더한 입력
+node src/cli.ts synthetic --out samples/synthetic # 5개 합성 GT 세트 + truth.glb
 node src/cli.ts build samples/demo --res 128
 node src/cli.ts serve --dir samples/demo    # 웹에서 회전·보정·생성 실험
 ```

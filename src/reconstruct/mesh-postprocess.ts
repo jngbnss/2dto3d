@@ -22,7 +22,9 @@ const LAMBDA = 0.5;
 const MU = -0.53;
 
 export function postprocessMesh(mesh: Mesh, options: PostprocessOptions): Mesh {
-  const kept = removeSmallComponents(mesh, options.minComponentFraction ?? 0.02);
+  // A component surviving every supplied silhouette is geometric evidence, not
+  // automatically noise. Keep it by default; callers may opt into filtering.
+  const kept = removeSmallComponents(mesh, options.minComponentFraction ?? 0);
   return smoothWithinBand(kept, options.iterations ?? 12, options.maxDisplacement);
 }
 
